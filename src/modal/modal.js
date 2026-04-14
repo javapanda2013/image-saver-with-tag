@@ -2374,6 +2374,15 @@ function setupModalEvents(
               sp.textContent = t; metaEl.appendChild(sp);
             }
           }
+          // パス表示も更新（v1.19.8 バグ修正）
+          if (newSavePaths) {
+            const pathEl = item.querySelector(".history-path");
+            if (pathEl) {
+              const isMulti = newSavePaths.length > 1;
+              pathEl.textContent = isMulti ? `${newSavePaths.length} 件のフォルダに保存` : (newSavePaths[0] || "");
+              pathEl.title = isMulti ? newSavePaths.join("\n") : (newSavePaths[0] || "");
+            }
+          }
           infoEditor.classList.remove("visible");
           showToast(shadow, "✅ 情報を更新しました");
         } else {

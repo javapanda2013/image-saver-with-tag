@@ -1880,7 +1880,8 @@ function setupHistoryTab() {
         for (const t of pendingTags) gSet.add(t);
         await browser.storage.local.set({ globalTags: [...gSet] });
         _historyData = history;
-        renderHistoryGrid();
+        for (const id of targetIds) _refreshHistCardByEntryId(id);
+        _updateHistCount();
         showStatus(`タグを ${pendingTags.size} 件追加しました`);
       }
     });
@@ -2001,7 +2002,8 @@ function setupHistoryTab() {
         for (const a of pendingAuthors) gSet.add(a);
         await browser.storage.local.set({ globalAuthors: [...gSet] });
         _historyData = history;
-        renderHistoryGrid();
+        for (const id of targetIds) _refreshHistCardByEntryId(id);
+        _updateHistCount();
         showStatus(`権利者を ${pendingAuthors.size} 件追加しました`);
       }
     });
@@ -2483,15 +2485,20 @@ function renderHistoryGridGrouped(grid, entries) {
 
       // ラッパー（overflow: visible で展開エリアを外に出す）
       const wrapper = document.createElement("div");
+      wrapper.className = "hist-group-wrapper";
+      wrapper.dataset.sessionId = group.sessionId;
+      wrapper.dataset.groupEntryIds = "|" + group.items.map(i => i.id).join("|") + "|";
       wrapper.style.cssText = "display:flex;flex-direction:column;gap:0;flex-shrink:0;width:220px;align-self:flex-start;";
 
       // 先頭カード（通常カードと同サイズ）
       const card = document.createElement("div");
       card.className = "hist-card hist-card-group";
+      card.dataset.representativeId = first.id;
       card.style.cssText = "border-color:#e67e22;position:relative;width:220px;height:360px;";
 
       // 枚数バッジ
       const badge = document.createElement("div");
+      badge.className = "hist-group-badge";
       badge.style.cssText = "position:absolute;top:4px;right:6px;z-index:2;font-size:10px;font-weight:700;" +
         "background:#e67e22;color:#fff;padding:1px 6px;border-radius:10px;pointer-events:none;";
       badge.textContent = `${group.items.length}枚`;
@@ -2545,13 +2552,14 @@ function renderHistoryGridGrouped(grid, entries) {
 
       // 展開ボタン（カードの下に分離）
       const expandBtn = document.createElement("button");
-      expandBtn.className = "hist-card-btn";
+      expandBtn.className = "hist-card-btn hist-group-expand-btn";
       expandBtn.style.cssText = "width:100%;border-radius:0 0 8px 8px;border:1px solid #e67e22;border-top:2px solid #e67e22;" +
         "padding:4px;font-size:10px;cursor:pointer;background:#fff8f0;color:#c0622a;font-family:inherit;text-align:center;";
       expandBtn.textContent = `▶ 展開（${group.items.length}枚）`;
 
       // 展開エリア（スクロール可能な横並び）
       const expandArea = document.createElement("div");
+      expandArea.className = "hist-group-expand-area";
       expandArea.style.cssText = "display:none;flex-direction:row;flex-wrap:wrap;gap:6px;" +
         "padding:8px;border:1px solid #e67e22;border-top:none;background:#fff8f0;" +
         "border-radius:0 0 8px 8px;max-height:600px;overflow-y:auto;";
@@ -2658,7 +2666,218 @@ function _applyAuthorFilter(author) {
   renderHistoryGrid();
 }
 
+/**
+ * 現在の絞り込み条件にエントリが合致するか判定
+ * タイル差分更新時に、編集結果が絞り込み条件から外れたか判定するために使用
+ */
+function _entryMatchesCurrentFilter(entry) {
+  const filterTokens = _histFilterTag ? _histFilterTag.split(/\s+/).filter(Boolean) : [];
+  const authorQ = _histAuthorFilter.trim().toLowerCase();
+  const hasTagFilter    = filterTokens.length > 0;
+  const hasAuthorFilter = !!authorQ;
+  const hasSourceFilter = !!_histSourceFilter;
+  if (!hasTagFilter && !hasAuthorFilter && !hasSourceFilter) return true;
+
+  const entryTags = (entry.tags || []).map(t => t.toLowerCase());
+  const tagMatch = !hasTagFilter || (
+    _histFilterMode === "and"
+      ? filterTokens.every(token => entryTags.some(t => t === token))
+      : filterTokens.some(token => entryTags.some(t => t === token))
+  );
+  const eAuthors = getEntryAuthors(entry).map(a => a.toLowerCase());
+  const authorMatch = !hasAuthorFilter || eAuthors.some(a => a.includes(authorQ));
+  const sourceMatch = !hasSourceFilter || (
+    _histSourceFilter === "external_import" ? entry.source === "external_import"
+    : entry.source !== "external_import"
+  );
+  let tagAuthorMatch;
+  if (hasTagFilter && hasAuthorFilter) {
+    tagAuthorMatch = _histFilterMode === "and" ? (tagMatch && authorMatch) : (tagMatch || authorMatch);
+  } else {
+    tagAuthorMatch = tagMatch && authorMatch;
+  }
+  return tagAuthorMatch && sourceMatch;
+}
+
+/**
+ * 指定エントリに対応するタイルDOM要素群を返す
+ * - 通常カード: 直接の hist-card
+ * - グループカード: グループ内のアイテムなら、グループのラッパー親要素と、展開エリア内の個別カードも含める
+ * 戻り値: { individualCards: NodeList相当の配列, groupWrappers: 該当する場合のグループwrapper配列 }
+ */
+function _findHistCardsByEntryId(entryId) {
+  const grid = document.getElementById("hist-grid");
+  if (!grid) return { individualCards: [], groupWrappers: [] };
+  // grid 直下の通常カードのみ（グループwrapper内の子カードは除外）
+  const individualCards = [...grid.querySelectorAll(`:scope > .hist-card[data-entry-id="${entryId}"]`)];
+  const groupWrappers = [...grid.querySelectorAll(`.hist-group-wrapper[data-group-entry-ids*="|${entryId}|"]`)];
+  return { individualCards, groupWrappers };
+}
+
+/**
+ * エントリ1件分のタイルを差分更新する
+ * - 絞り込み条件に合致しなければタイルを非表示（削除）
+ * - 合致すれば _buildHistCardInner で再構築
+ * - グループ表示中で該当エントリがグループ先頭なら、グループカードの代表表示も更新
+ * - グループ件数が変動した場合はバッジも更新
+ */
+function _refreshHistCardByEntryId(entryId) {
+  const entry = _historyData.find(h => h.id === entryId);
+  const { individualCards, groupWrappers } = _findHistCardsByEntryId(entryId);
+
+  // エントリが削除されている、または絞り込み合致しない場合は非表示
+  const shouldHide = !entry || !_entryMatchesCurrentFilter(entry);
+
+  // 通常カード側
+  for (const card of individualCards) {
+    if (shouldHide) {
+      card.remove();
+      continue;
+    }
+    const wasSelected = card.classList.contains("selected");
+    card.innerHTML = "";
+    _buildHistCardInner(card, entry);
+    card.className = "hist-card" + (wasSelected || _histSelected.has(entry.id) ? " selected" : "");
+  }
+
+  // グループカード側（グループ表示モード）
+  for (const wrapper of groupWrappers) {
+    _refreshGroupWrapper(wrapper, entryId, shouldHide ? null : entry);
+  }
+}
+
+/**
+ * グループwrapperの中の指定エントリを更新・削除する
+ * - 展開エリア内の該当子カードを再構築 or 削除
+ * - グループ先頭（代表表示）に影響する場合は代表カードも更新
+ * - バッジの枚数も更新
+ * - グループが空 or 1件になった場合は wrapper ごと削除（次回描画で通常カードに戻る）
+ */
+function _refreshGroupWrapper(wrapper, entryId, entryOrNull) {
+  const sessionId = wrapper.dataset.sessionId;
+  if (!sessionId) return;
+  // 現在の _historyData からグループを再構築
+  const items = _historyData.filter(h => h.sessionId === sessionId && _entryMatchesCurrentFilter(h));
+  if (items.length <= 1) {
+    // グループ解体（0件 or 1件になった）→ 順序維持のため全体再描画にフォールバック
+    renderHistoryGrid();
+    return;
+  }
+
+  // データ属性 data-group-entry-ids を更新
+  wrapper.dataset.groupEntryIds = "|" + items.map(i => i.id).join("|") + "|";
+
+  // 展開エリア内の該当子カードを更新・削除
+  const expandArea = wrapper.querySelector(".hist-group-expand-area");
+  if (expandArea) {
+    const childCards = [...expandArea.querySelectorAll(`.hist-card[data-entry-id="${entryId}"]`)];
+    for (const child of childCards) {
+      if (!entryOrNull) {
+        child.remove();
+      } else {
+        const wasSelected = child.classList.contains("selected");
+        child.innerHTML = "";
+        _buildHistCardInner(child, entryOrNull);
+        child.className = "hist-card" + (wasSelected || _histSelected.has(entryOrNull.id) ? " selected" : "");
+      }
+    }
+  }
+
+  // バッジ更新
+  const badge = wrapper.querySelector(".hist-group-badge");
+  if (badge) badge.textContent = `${items.length}枚`;
+  // 展開ボタンのラベル更新
+  const expandBtn = wrapper.querySelector(".hist-group-expand-btn");
+  if (expandBtn) {
+    const expanded = expandArea && expandArea.style.display !== "none";
+    expandBtn.textContent = expanded ? `▼ 折りたたむ` : `▶ 展開（${items.length}枚）`;
+  }
+  // グループチェックボックス状態更新
+  const groupChk = wrapper.querySelector(".hist-group-select-box");
+  if (groupChk) {
+    groupChk.checked = items.every(it => _histSelected.has(it.id));
+  }
+
+  // 代表カード（グループ先頭）の表示を更新
+  // グループ先頭は items.at(-1)（古いものが代表）
+  const representative = items.at(-1);
+  const representativeCard = wrapper.querySelector(":scope > .hist-card.hist-card-group");
+  if (representativeCard && representative) {
+    // data-entry-id と data-representative-id を更新
+    representativeCard.dataset.representativeId = representative.id;
+    const overlay = representativeCard.querySelector(".hist-card-overlay");
+    if (overlay) {
+      const paths = Array.isArray(representative.savePaths) ? representative.savePaths : (representative.savePath ? [representative.savePath] : []);
+      const primary = paths[0] ?? "";
+      const date = new Date(representative.savedAt).toLocaleString("ja-JP");
+      const tagHtml = (representative.tags || [])
+        .map(t => `<span class="hist-card-tag" data-tag="${escHtml(t)}">${escHtml(t)}</span>`).join("");
+      overlay.innerHTML = `
+        <div class="hist-card-body">
+          <div class="hist-card-filename" title="${escHtml(representative.filename)}">${escHtml(representative.filename)} 他</div>
+          <div class="hist-card-path" title="${escHtml(primary)}">${escHtml(primary || "（パスなし）")}</div>
+          <div class="hist-card-tags">${tagHtml}</div>
+          <div class="hist-card-date">${escHtml(date)}</div>
+        </div>`;
+      // タグクリック配線
+      overlay.querySelectorAll(".hist-card-tag").forEach(el => {
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          _applyTagFilter(el.dataset.tag.toLowerCase());
+        });
+      });
+    }
+  }
+}
+
+/**
+ * エントリ1件をDOMから削除（個別タイル削除ボタン用）
+ * - 通常カードなら要素ごと削除
+ * - グループカード内なら展開エリア内の該当子カード削除 + バッジ更新
+ */
+function _removeHistCardByEntryId(entryId) {
+  _refreshHistCardByEntryId(entryId);
+}
+
+/** 保存履歴タブのツールバーボタンの disabled 状態を現在の選択数に応じて更新 */
+function _updateHistToolbarButtons() {
+  const n = _histSelected.size;
+  const set = (id, disabled) => { const el = document.getElementById(id); if (el) el.disabled = disabled; };
+  set("hist-delete-selected", n === 0);
+  set("hist-deselect-all", n === 0);
+  set("hist-add-tag-selected", n === 0);
+  set("hist-add-author-selected", n === 0);
+  set("hist-sync-global-tags", n === 0);
+  set("hist-group-selected", n < 2);
+  set("hist-ungroup-selected", n === 0);
+}
+
+/** 件数表示を現在の絞り込み状態に応じて更新 */
+function _updateHistCount() {
+  const countEl = document.getElementById("hist-count");
+  if (!countEl) return;
+  const filterTokens = _histFilterTag ? _histFilterTag.split(/\s+/).filter(Boolean) : [];
+  const authorQ = _histAuthorFilter.trim().toLowerCase();
+  const hasTagFilter    = filterTokens.length > 0;
+  const hasAuthorFilter = !!authorQ;
+  const hasSourceFilter = !!_histSourceFilter;
+  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter;
+  const filtered = isFiltering
+    ? _historyData.filter(_entryMatchesCurrentFilter)
+    : _historyData;
+  const totalFiltered = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / _histPageSize));
+  const suffix = isFiltering ? "（絞り込み中）" : "";
+  if (totalFiltered <= _histPageSize) {
+    countEl.textContent = `${totalFiltered} 件${suffix}`;
+  } else {
+    countEl.textContent = `${_histPage + 1}/${totalPages} ページ（全 ${totalFiltered} 件${suffix ? "・絞り込み中" : ""}）`;
+  }
+  _currentFilteredHistory = isFiltering ? filtered : null;
+}
+
 function _buildHistCardInner(card, entry, onThumbClick) {
+  card.dataset.entryId = entry.id;
   const paths   = Array.isArray(entry.savePaths) ? entry.savePaths : (entry.savePath ? [entry.savePath] : []);
   const primary = paths[0] ?? "";
   const date    = new Date(entry.savedAt).toLocaleString("ja-JP");
@@ -2937,7 +3156,7 @@ function _buildHistCardInner(card, entry, onThumbClick) {
   infoEditBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     const isOpen = infoEditor.classList.contains("open");
-    if (isOpen) { infoEditor.classList.remove("open"); return; }
+    if (isOpen) { closeInfoEditor(); return; }
     // 現在値でリセット
     pendingTags    = new Set(entry.tags    || []);
     pendingAuthors = [...getEntryAuthors(entry)];
@@ -2965,6 +3184,13 @@ function _buildHistCardInner(card, entry, onThumbClick) {
     editorInput.focus();
   });
 
+  // パネルを閉じる際の共通処理：タイル差分更新・絞り込み非合致なら非表示
+  function closeInfoEditor() {
+    infoEditor.classList.remove("open");
+    _refreshHistCardByEntryId(entry.id);
+    _updateHistCount();
+  }
+
   // 明示的な保存ボタン（リアルタイム保存と併用）
   infoSaveBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
@@ -2978,13 +3204,13 @@ function _buildHistCardInner(card, entry, onThumbClick) {
 
   infoCancelBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    infoEditor.classList.remove("open");
+    closeInfoEditor();
   });
 
   // オーバーレイ背景クリックで閉じる
   infoEditor.addEventListener("click", (e) => {
     if (e.target === infoEditor) {
-      infoEditor.classList.remove("open");
+      closeInfoEditor();
     }
   });
 
@@ -3005,7 +3231,7 @@ function _buildHistCardInner(card, entry, onThumbClick) {
         updateUndoBtn();
       }
     } else if (e.key === "Escape") {
-      infoEditor.classList.remove("open");
+      closeInfoEditor();
     }
   });
 
@@ -3074,7 +3300,8 @@ function _buildHistCardInner(card, entry, onThumbClick) {
         target.tags = (target.tags || []).filter(t => t !== tag);
         await browser.storage.local.set({ saveHistory: history });
         _historyData = history;
-        renderHistoryGrid();
+        _refreshHistCardByEntryId(entry.id);
+        _updateHistCount();
       }
     });
   });
@@ -3112,7 +3339,9 @@ function _buildHistCardInner(card, entry, onThumbClick) {
     _historyData = _historyData.filter(h => h.id !== entry.id);
     await browser.storage.local.set({ saveHistory: _historyData });
     _histSelected.delete(entry.id);
-    renderHistoryGrid();
+    _refreshHistCardByEntryId(entry.id);
+    _updateHistToolbarButtons();
+    _updateHistCount();
     showStatus("削除しました");
   });
 }
