@@ -312,11 +312,18 @@ function sendNative(payload) {
 
     addLog("INFO", `Native送信: ${payload.cmd}`, payloadJson.slice(0, 200));
 
+    // v1.20.1: コマンド別タイムアウト。
+    // 大容量ペイロードを扱うコマンド（exemptCmds と同じ3種）は書き込み・取得に時間がかかるため 300 秒へ延長。
+    // その他は従来どおり 10 秒で素早くハング検知する。
+    // 既知懸念（04_影響範囲マップ G1「大ファイル書き込みは超過リスク」）の解消。
+    const LONG_TIMEOUT_CMDS = ["WRITE_FILE", "SAVE_IMAGE_BASE64", "READ_LOCAL_IMAGE_BASE64"];
+    const timeoutMs = LONG_TIMEOUT_CMDS.includes(payload.cmd) ? 300000 : 10000;
+
     const timer = setTimeout(() => {
       port.disconnect();
-      addLog("ERROR", `Native タイムアウト: ${payload.cmd}`);
+      addLog("ERROR", `Native タイムアウト: ${payload.cmd}`, `${timeoutMs / 1000}s`);
       reject(new Error("ネイティブアプリからの応答がタイムアウトしました"));
-    }, 10000);
+    }, timeoutMs);
 
     port.onMessage.addListener((response) => {
       clearTimeout(timer);

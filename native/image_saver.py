@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 image_saver.py  —  Firefox Native Messaging ホスト
-version: 1.9.0
+version: 1.9.1
 
 受け取るコマンド:
   {"cmd": "LIST_DIR",      "path": null}
@@ -329,7 +329,12 @@ def handle_write_file(path, content):
     """
     テキストファイルをパス指定で書き出す（エクスポート即出力用）。
     保存先フォルダが存在しない場合はエラーを返す（自動作成しない）。
+
+    v1.9.1: アトミック書き込みに変更。<path>.tmp に書き出してから os.replace で最終名へリネーム。
+    書き込み途中で中断されても最終ファイルは汚れず、中途半端なファイルは .tmp のまま残る。
+    次回実行時に古い .tmp を事前削除して再試行する。
     """
+    tmp_path = path + ".tmp"
     try:
         save_dir = os.path.dirname(path)
         if save_dir and not os.path.isdir(save_dir):
@@ -338,12 +343,31 @@ def handle_write_file(path, content):
                 "error": f"フォルダが存在しません: {save_dir}",
                 "errorCode": "DIR_NOT_FOUND",
             }
-        with open(path, "w", encoding="utf-8") as f:
+        # 残骸の .tmp を事前削除
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        # 一時ファイルへ書き込み
+        with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(content)
+        # アトミックに最終名へリネーム（Windows でも上書き可）
+        os.replace(tmp_path, path)
         return {"ok": True}
     except PermissionError:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
         return {"ok": False, "error": f"書き込み権限がありません: {path}"}
     except Exception as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
         return {"ok": False, "error": str(e)}
 
 
