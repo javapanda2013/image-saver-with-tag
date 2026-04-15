@@ -1680,12 +1680,15 @@ function _setupHistChipInput({
 
   async function showSuggest() {
     const q = input.value.trim().toLowerCase();
+    // v1.21.2: 未入力時はサジェスト非表示（従来は全件古い順 8 件を固定表示していたが意味が薄い）
+    if (!q) { hideSuggest(); return; }
     const src = (await getSuggestions()) || [];
     const chips = getChips();
-    const matches = (q
-      ? src.filter(v => v.toLowerCase().includes(q))
-      : src
-    ).filter(v => !chips.includes(v.toLowerCase())).slice(0, 8);
+    // v1.21.2: 前方一致（startsWith）に変更。部分一致だと候補が広くなりすぎるため
+    const matches = src
+      .filter(v => v.toLowerCase().startsWith(q))
+      .filter(v => !chips.includes(v.toLowerCase()))
+      .slice(0, 8);
     if (!matches.length) { hideSuggest(); return; }
     suggest.innerHTML = matches.map(v =>
       `<div class="hist-sug-item" data-val="${escHtml(v)}">${escHtml(v)}</div>`

@@ -1823,12 +1823,15 @@ function setupModalEvents(
       activeIdx = -1;
     }
     async function showSuggest(q) {
+      const qLower = (q || "").trim().toLowerCase();
+      // v1.21.2: 未入力時はサジェスト非表示（従来は全件表示していたが意味が薄い）
+      if (!qLower) { hideSuggest(); return; }
       const list = await getSuggestions();
-      const qLower = (q || "").toLowerCase();
       const chips = new Set(getChips());
+      // v1.21.2: 前方一致（startsWith）に変更
       const filtered = (list || [])
         .filter(x => !chips.has(x))
-        .filter(x => qLower === "" || x.toLowerCase().includes(qLower))
+        .filter(x => x.toLowerCase().startsWith(qLower))
         .slice(0, 30);
       if (filtered.length === 0) { hideSuggest(); return; }
       suggest.innerHTML = filtered
