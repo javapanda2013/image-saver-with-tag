@@ -1559,6 +1559,12 @@ function escHtml(str) {
 // ----------------------------------------------------------------
 let _historyData = [];
 let _currentFilteredHistory = null; // 絞り込み中はフィルター後配列、なしは null
+// 絞り込みチップ（v1.21.1 でチップ化）
+// - 正規化方針：タグ・権利者ともに chips は lower-case 済みで保持
+// - `_histFilterTag` / `_histAuthorFilter` は既存呼び出しコード向けの shadow（join 表示用）
+//   ※権利者名にスペースを含むケースがあり join で壊れるため、フィルタ判定は必ず chips 配列側を参照する
+let _histFilterTagChips    = [];
+let _histFilterAuthorChips = [];
 let _histFilterTag = "";
 let _histFilterMode = "or"; // "or" | "and"
 let _histScrollPos = 0; // 絞り込みなし時のスクロール位置
@@ -1611,15 +1617,157 @@ async function setupHistoryDisplayMode() {
   });
 }
 
+/**
+ * 履歴絞り込みチップ入力コントローラ（v1.21.1）
+ * タグ絞り込み / 権利者絞り込みで共通利用。
+ *
+ * 挙動：
+ * - Enter / カンマでチップ確定（スペース確定は commitOnSpace=true のときのみ有効）
+ * - 入力欄フォーカス時・入力時に候補サジェストを表示（1文字目から発火、上限8件）
+ * - サジェスト項目のクリックで即チップ化し、続けて選べるよう再表示
+ * - ✕ボタン / Backspace（入力空のとき）でチップ削除
+ * - クリアボタンで全チップ一括削除
+ */
+function _setupHistChipInput({
+  wrapId, inputId, suggestId, clearBtnId,
+  chipClass,        // "" or "author"
+  commitOnSpace,    // bool
+  getSuggestions,   // async () => string[]
+  getChips,         // () => string[]
+  setChips,         // (string[]) => void
+}) {
+  const wrap    = document.getElementById(wrapId);
+  const input   = document.getElementById(inputId);
+  const suggest = document.getElementById(suggestId);
+  const clear   = document.getElementById(clearBtnId);
+  if (!wrap || !input || !suggest) return;
+
+  function renderChips() {
+    Array.from(wrap.querySelectorAll(".hist-chip")).forEach(c => c.remove());
+    const chips = getChips();
+    chips.forEach(chip => {
+      const span = document.createElement("span");
+      span.className = "hist-chip" + (chipClass ? " " + chipClass : "");
+      span.textContent = chip;
+      const btn = document.createElement("button");
+      btn.textContent = "×";
+      btn.title = "削除";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        setChips(getChips().filter(c => c !== chip));
+        renderChips();
+      });
+      span.appendChild(btn);
+      wrap.insertBefore(span, input);
+    });
+    if (clear) clear.style.display = chips.length ? "" : "none";
+  }
+
+  function commitInput() {
+    const raw = input.value.trim();
+    if (!raw) return false;
+    const normalized = raw.toLowerCase();
+    const chips = getChips();
+    if (!chips.includes(normalized)) {
+      setChips([...chips, normalized]);
+      renderChips();
+    }
+    input.value = "";
+    hideSuggest();
+    return true;
+  }
+
+  async function showSuggest() {
+    const q = input.value.trim().toLowerCase();
+    const src = (await getSuggestions()) || [];
+    const chips = getChips();
+    const matches = (q
+      ? src.filter(v => v.toLowerCase().includes(q))
+      : src
+    ).filter(v => !chips.includes(v.toLowerCase())).slice(0, 8);
+    if (!matches.length) { hideSuggest(); return; }
+    suggest.innerHTML = matches.map(v =>
+      `<div class="hist-sug-item" data-val="${escHtml(v)}">${escHtml(v)}</div>`
+    ).join("");
+    suggest.classList.add("visible");
+    suggest.querySelectorAll(".hist-sug-item").forEach(el => {
+      el.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        input.value = el.dataset.val;
+        commitInput();
+        input.focus();
+        showSuggest();  // 続けて選択できるよう再表示
+      });
+    });
+  }
+
+  function hideSuggest() {
+    suggest.classList.remove("visible");
+    suggest.innerHTML = "";
+  }
+
+  input.addEventListener("input", () => showSuggest());
+  input.addEventListener("focus", () => {
+    wrap.classList.add("focused");
+    showSuggest();
+  });
+  input.addEventListener("blur", () => {
+    wrap.classList.remove("focused");
+    setTimeout(hideSuggest, 150);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === ",") {
+      if (input.value.trim()) {
+        e.preventDefault();
+        commitInput();
+      }
+    } else if (e.key === " " && commitOnSpace) {
+      if (input.value.trim()) {
+        e.preventDefault();
+        commitInput();
+      }
+    } else if (e.key === "Backspace" && !input.value) {
+      const chips = getChips();
+      if (chips.length) {
+        setChips(chips.slice(0, -1));
+        renderChips();
+      }
+    } else if (e.key === "Escape") {
+      hideSuggest();
+      input.blur();
+    }
+  });
+
+  if (clear) {
+    clear.addEventListener("click", () => {
+      setChips([]);
+      renderChips();
+      input.focus();
+    });
+  }
+
+  wrap.addEventListener("click", (e) => {
+    if (e.target.closest(".hist-chip") || e.target.closest(".hist-chip-suggest")) return;
+    input.focus();
+  });
+
+  // 初期描画
+  renderChips();
+}
+
 function setupHistoryTab() {
-  // 絞り込み入力
+  // 絞り込み入力（v1.21.1 でチップ化）
   const filterInput = document.getElementById("hist-filter");
   const filterClear = document.getElementById("hist-filter-clear");
   const selectAllBtn = document.getElementById("hist-select-all");
 
   function updateSelectAllBtn() {
     // 何らかの絞り込みが有効な場合のみ活性化
-    selectAllBtn.disabled = !_histFilterTag && !_histAuthorFilter && !_histSourceFilter;
+    selectAllBtn.disabled =
+      _histFilterTagChips.length === 0 &&
+      _histFilterAuthorChips.length === 0 &&
+      !_histSourceFilter;
   }
   _updateSelectAllBtn = updateSelectAllBtn; // グローバル参照を更新
 
@@ -1628,30 +1776,61 @@ function setupHistoryTab() {
     filterModeSelect.addEventListener("change", () => {
       _histFilterMode = filterModeSelect.value;
       _histPage = 0;
-      if (_histFilterTag) renderHistoryGrid();
+      if (_histFilterTagChips.length || _histFilterAuthorChips.length) renderHistoryGrid();
     });
   }
 
-  filterInput.addEventListener("input", () => {
-    const prev = _histFilterTag;
-    _histFilterTag = filterInput.value.trim().toLowerCase();
-    _histPage = 0;
-    filterClear.style.display = _histFilterTag ? "" : "none";
-    updateSelectAllBtn();
-    if (!prev && _histFilterTag) {
-      const grid = document.getElementById("hist-grid");
-      _histScrollPos = grid?.scrollTop ?? 0;
-    }
-    renderHistoryGrid();
+  // タグ絞り込みチップ
+  _setupHistChipInput({
+    wrapId: "hist-filter-wrap",
+    inputId: "hist-filter",
+    suggestId: "hist-filter-suggest",
+    clearBtnId: "hist-filter-clear",
+    chipClass: "",
+    commitOnSpace: true, // スペース区切りで即チップ化（v1.19.1 以前の仕様を踏襲）
+    getSuggestions: async () => {
+      const { globalTags } = await browser.storage.local.get("globalTags");
+      return globalTags || [];
+    },
+    getChips: () => _histFilterTagChips,
+    setChips: (chips) => {
+      const prevLen = _histFilterTagChips.length;
+      _histFilterTagChips = chips;
+      _histFilterTag = chips.join(" "); // shadow（表示互換のため保持、判定には使わない）
+      _histPage = 0;
+      updateSelectAllBtn();
+      if (prevLen === 0 && chips.length > 0) {
+        const grid = document.getElementById("hist-grid");
+        _histScrollPos = grid?.scrollTop ?? 0;
+      }
+      renderHistoryGrid();
+    },
   });
-  filterClear.addEventListener("click", () => {
-    _histFilterTag = "";
-    _histPage = 0;
-    filterInput.value = "";
-    filterClear.style.display = "none";
-    updateSelectAllBtn();
-    renderHistoryGrid();
+
+  // 権利者絞り込みチップ
+  _setupHistChipInput({
+    wrapId: "hist-author-filter-wrap",
+    inputId: "hist-author-filter",
+    suggestId: "hist-author-filter-suggest",
+    clearBtnId: "hist-author-filter-clear",
+    chipClass: "author",
+    commitOnSpace: false, // 権利者名はスペースを含むことがあるため、スペース確定を無効化
+    getSuggestions: async () => {
+      const { globalAuthors } = await browser.storage.local.get("globalAuthors");
+      return globalAuthors || [];
+    },
+    getChips: () => _histFilterAuthorChips,
+    setChips: (chips) => {
+      _histFilterAuthorChips = chips;
+      _histAuthorFilter = chips.join(" "); // shadow（表示互換のため保持）
+      _histPage = 0;
+      updateSelectAllBtn();
+      renderHistoryGrid();
+    },
   });
+
+  // 互換：既存の filterClear は setupHistChipInput 側でバインド済み
+  void filterInput; void filterClear;
 
   // 件数セレクト
   const pageSizeSelect = document.getElementById("hist-page-size-select");
@@ -1666,22 +1845,8 @@ function setupHistoryTab() {
 
   // 全選択（絞り込み中の全件）
   selectAllBtn.addEventListener("click", () => {
-    if (!_histFilterTag && !_histAuthorFilter && !_histSourceFilter) return;
-    const filterTokens = _histFilterTag ? _histFilterTag.split(/\s+/).filter(Boolean) : [];
-    const authorQ      = _histAuthorFilter.trim().toLowerCase();
-    const filtered = _historyData.filter(e => {
-      const entryTags = (e.tags || []).map(t => t.toLowerCase());
-      const tagMatch = !filterTokens.length || (_histFilterMode === "and"
-        ? filterTokens.every(token => entryTags.some(t => t.includes(token)))
-        : filterTokens.some(token => entryTags.some(t => t.includes(token))));
-      const eAuthors = getEntryAuthors(e).map(a => a.toLowerCase());
-      const authorMatch = !authorQ || eAuthors.some(a => a.includes(authorQ));
-      const sourceMatch = !_histSourceFilter || (
-        _histSourceFilter === "external_import" ? e.source === "external_import"
-        : e.source !== "external_import"
-      );
-      return tagMatch && authorMatch && sourceMatch;
-    });
+    if (_histFilterTagChips.length === 0 && _histFilterAuthorChips.length === 0 && !_histSourceFilter) return;
+    const filtered = _historyData.filter(e => _entryMatchesCurrentFilter(e));
     filtered.forEach(e => _histSelected.add(e.id));
     document.getElementById("hist-deselect-all").disabled = _histSelected.size === 0;
     document.getElementById("hist-delete-selected").disabled = _histSelected.size === 0;
@@ -2223,26 +2388,7 @@ function setupHistoryTab() {
     });
   }
 
-  // 作者フィルター
-  const authorFilterInput = document.getElementById("hist-author-filter");
-  const authorFilterClear = document.getElementById("hist-author-filter-clear");
-  if (authorFilterInput) {
-    authorFilterInput.addEventListener("input", () => {
-      _histAuthorFilter = authorFilterInput.value.trim().toLowerCase();
-      _histPage = 0;
-      if (authorFilterClear) authorFilterClear.style.display = _histAuthorFilter ? "" : "none";
-      renderHistoryGrid();
-    });
-  }
-  if (authorFilterClear) {
-    authorFilterClear.addEventListener("click", () => {
-      _histAuthorFilter = "";
-      _histPage = 0;
-      if (authorFilterInput) { authorFilterInput.value = ""; }
-      authorFilterClear.style.display = "none";
-      renderHistoryGrid();
-    });
-  }
+  // 作者フィルター（v1.21.1 でチップ化。バインドは _setupHistChipInput 側）
 
   // 取り込み元フィルター
   const sourceFilterSelect = document.getElementById("hist-source-filter");
@@ -2322,36 +2468,12 @@ function renderHistoryGrid() {
   const grid = document.getElementById("hist-grid");
   grid.innerHTML = "";
 
-  const filterQ = _histFilterTag;
-  const filterTokens = filterQ ? filterQ.split(/\s+/).filter(Boolean) : [];
-  const authorQ = _histAuthorFilter.trim().toLowerCase();
-  const hasTagFilter    = filterTokens.length > 0;
-  const hasAuthorFilter = !!authorQ;
+  const hasTagFilter    = _histFilterTagChips.length > 0;
+  const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
 
   const filtered = (hasTagFilter || hasAuthorFilter || hasSourceFilter)
-    ? _historyData.filter(e => {
-        const entryTags = (e.tags || []).map(t => t.toLowerCase());
-        const tagMatch = !hasTagFilter || (
-          _histFilterMode === "and"
-            ? filterTokens.every(token => entryTags.some(t => t === token))
-            : filterTokens.some(token => entryTags.some(t => t === token))
-        );
-        const eAuthors = getEntryAuthors(e).map(a => a.toLowerCase());
-        const authorMatch = !hasAuthorFilter || eAuthors.some(a => a.includes(authorQ));
-        const sourceMatch = !hasSourceFilter || (
-          _histSourceFilter === "external_import" ? e.source === "external_import"
-          : e.source !== "external_import"
-        );
-        // タグ・権利者の両フィルター有効時のみモードを適用。ソースフィルタは常に AND
-        let tagAuthorMatch;
-        if (hasTagFilter && hasAuthorFilter) {
-          tagAuthorMatch = _histFilterMode === "and" ? (tagMatch && authorMatch) : (tagMatch || authorMatch);
-        } else {
-          tagAuthorMatch = tagMatch && authorMatch;
-        }
-        return tagAuthorMatch && sourceMatch;
-      })
+    ? _historyData.filter(e => _entryMatchesCurrentFilter(e))
     : _historyData;
 
   // 絞り込み結果をライトボックスのグローバルナビ用に保持
@@ -2648,20 +2770,35 @@ let _updateSelectAllBtn = () => {};
 
 /** タグチップクリックで絞り込みを切り替える共通処理 */
 function _applyTagFilter(tag) {
-  const prev = _histFilterTag;
-  // 既存トークンにタグを追加/削除（スペース区切りで複数対応）
-  const tokens = prev ? prev.split(/\s+/).filter(Boolean) : [];
-  const idx = tokens.indexOf(tag);
-  if (idx !== -1) {
-    tokens.splice(idx, 1); // 既に含まれていれば除去
-  } else {
-    tokens.push(tag.toLowerCase());      // 含まれていなければ追加
+  const prevLen = _histFilterTagChips.length;
+  const t = (tag || "").trim().toLowerCase();
+  if (!t) return;
+  const chips = [..._histFilterTagChips];
+  const idx = chips.indexOf(t);
+  if (idx !== -1) chips.splice(idx, 1);
+  else chips.push(t);
+  _histFilterTagChips = chips;
+  _histFilterTag = chips.join(" "); // shadow
+  _histPage = 0;
+  // 表示同期（チップ UI 側を直接再描画させる）
+  const wrap = document.getElementById("hist-filter-wrap");
+  if (wrap) {
+    Array.from(wrap.querySelectorAll(".hist-chip")).forEach(c => c.remove());
+    const input = document.getElementById("hist-filter");
+    chips.forEach(chip => {
+      const span = document.createElement("span");
+      span.className = "hist-chip";
+      span.textContent = chip;
+      const btn = document.createElement("button");
+      btn.textContent = "×"; btn.title = "削除";
+      btn.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); _applyTagFilter(chip); });
+      span.appendChild(btn);
+      if (input) wrap.insertBefore(span, input);
+    });
   }
-  _histFilterTag = tokens.join(" ");
-  document.getElementById("hist-filter").value = _histFilterTag;
-  document.getElementById("hist-filter-clear").style.display = _histFilterTag ? "" : "none";
+  document.getElementById("hist-filter-clear").style.display = chips.length ? "" : "none";
   _updateSelectAllBtn();
-  if (!prev && _histFilterTag) {
+  if (prevLen === 0 && chips.length > 0) {
     // 絞り込み開始：スクロール位置を記憶
     const grid = document.getElementById("hist-grid");
     _histScrollPos = grid?.scrollTop ?? 0;
@@ -2670,35 +2807,58 @@ function _applyTagFilter(tag) {
 }
 
 function _applyAuthorFilter(author) {
-  _histAuthorFilter = author;
+  const a = (author || "").trim().toLowerCase();
+  const chips = a ? [a] : [];
+  _histFilterAuthorChips = chips;
+  _histAuthorFilter = chips.join(" "); // shadow
   _histPage = 0;
+  const wrap = document.getElementById("hist-author-filter-wrap");
   const input = document.getElementById("hist-author-filter");
   const clear = document.getElementById("hist-author-filter-clear");
-  if (input) input.value = author;
-  if (clear) clear.style.display = author ? "" : "none";
+  if (wrap) {
+    Array.from(wrap.querySelectorAll(".hist-chip")).forEach(c => c.remove());
+    chips.forEach(chip => {
+      const span = document.createElement("span");
+      span.className = "hist-chip author";
+      span.textContent = chip;
+      const btn = document.createElement("button");
+      btn.textContent = "×"; btn.title = "削除";
+      btn.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); _applyAuthorFilter(""); });
+      span.appendChild(btn);
+      if (input) wrap.insertBefore(span, input);
+    });
+  }
+  if (clear) clear.style.display = chips.length ? "" : "none";
+  _updateSelectAllBtn();
   renderHistoryGrid();
 }
 
 /**
  * 現在の絞り込み条件にエントリが合致するか判定
- * タイル差分更新時に、編集結果が絞り込み条件から外れたか判定するために使用
+ * タイル差分更新時に、編集結果が絞り込み条件から外れたか判定するために使用。
+ * v1.21.1 以降、タグ・権利者ともチップ配列を参照する。
+ * - タグ：チップごと完全一致（v1.19.1 仕様踏襲）、AND/OR は `_histFilterMode`
+ * - 権利者：チップごと部分一致（従来の substring 挙動を踏襲）、AND/OR は `_histFilterMode`
+ * - タグ・権利者の両方が有効なときの組合せも `_histFilterMode` に従う
  */
 function _entryMatchesCurrentFilter(entry) {
-  const filterTokens = _histFilterTag ? _histFilterTag.split(/\s+/).filter(Boolean) : [];
-  const authorQ = _histAuthorFilter.trim().toLowerCase();
-  const hasTagFilter    = filterTokens.length > 0;
-  const hasAuthorFilter = !!authorQ;
+  const hasTagFilter    = _histFilterTagChips.length > 0;
+  const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
   if (!hasTagFilter && !hasAuthorFilter && !hasSourceFilter) return true;
 
   const entryTags = (entry.tags || []).map(t => t.toLowerCase());
   const tagMatch = !hasTagFilter || (
     _histFilterMode === "and"
-      ? filterTokens.every(token => entryTags.some(t => t === token))
-      : filterTokens.some(token => entryTags.some(t => t === token))
+      ? _histFilterTagChips.every(chip => entryTags.some(t => t === chip))
+      : _histFilterTagChips.some(chip => entryTags.some(t => t === chip))
   );
   const eAuthors = getEntryAuthors(entry).map(a => a.toLowerCase());
-  const authorMatch = !hasAuthorFilter || eAuthors.some(a => a.includes(authorQ));
+  const authorMatch = !hasAuthorFilter || (
+    _histFilterMode === "and"
+      ? _histFilterAuthorChips.every(chip => eAuthors.some(a => a.includes(chip)))
+      : _histFilterAuthorChips.some(chip => eAuthors.some(a => a.includes(chip)))
+  );
   const sourceMatch = !hasSourceFilter || (
     _histSourceFilter === "external_import" ? entry.source === "external_import"
     : entry.source !== "external_import"
@@ -2869,10 +3029,8 @@ function _updateHistToolbarButtons() {
 function _updateHistCount() {
   const countEl = document.getElementById("hist-count");
   if (!countEl) return;
-  const filterTokens = _histFilterTag ? _histFilterTag.split(/\s+/).filter(Boolean) : [];
-  const authorQ = _histAuthorFilter.trim().toLowerCase();
-  const hasTagFilter    = filterTokens.length > 0;
-  const hasAuthorFilter = !!authorQ;
+  const hasTagFilter    = _histFilterTagChips.length > 0;
+  const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
   const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter;
   const filtered = isFiltering

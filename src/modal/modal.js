@@ -864,11 +864,6 @@ function buildModalHTML(defaultFilename) {
       margin: 0 auto; padding-bottom: 4px;
     }
     .history-filter-wrap.visible { display: flex; }
-    .history-filter-wrap input[type="text"] {
-      width: 120px; border: 1px solid #d0d0d0; border-radius: 5px;
-      padding: 3px 7px; font-size: 11px; outline: none; font-family: inherit;
-    }
-    .history-filter-wrap input[type="text"]:focus { border-color: #4a90e2; }
     .history-filter-mode-select {
       font-size: 10px; border: 1px solid #dde; border-radius: 4px;
       padding: 2px 4px; cursor: pointer; font-family: inherit; background: #fff; color: #444;
@@ -880,6 +875,45 @@ function buildModalHTML(defaultFilename) {
     }
     .history-filter-clear.visible { display: block; }
     .history-filter-clear:hover { color: #e74c3c; }
+    /* 絞り込みチップ UI（v1.21.1） */
+    .hist-chip-box {
+      position: relative; display: inline-flex; align-items: center;
+      flex-wrap: wrap; gap: 3px;
+      min-width: 140px; max-width: 260px;
+      border: 1px solid #d0d0d0; border-radius: 5px;
+      padding: 2px 5px; background: #fff;
+    }
+    .hist-chip-box.focus { border-color: #4a90e2; }
+    .hist-chip-box .hist-chip {
+      display: inline-flex; align-items: center; gap: 2px;
+      background: #e3f0ff; color: #1a56db;
+      border-radius: 3px; padding: 0 4px; font-size: 10px; font-weight: 600;
+      line-height: 1.6;
+    }
+    .hist-chip-box .hist-chip.author {
+      background: #f3e8ff; color: #7c3aed;
+    }
+    .hist-chip-box .hist-chip .hist-chip-x {
+      background: none; border: none; cursor: pointer;
+      color: inherit; font-size: 11px; padding: 0 1px; line-height: 1;
+    }
+    .hist-chip-box input[type="text"].hist-chip-input {
+      border: none; outline: none; flex: 1 1 60px; min-width: 60px;
+      padding: 1px 2px; font-size: 11px; font-family: inherit; background: transparent;
+    }
+    .hist-chip-suggest {
+      position: absolute; top: 100%; left: 0;
+      background: #fff; border: 1px solid #d0d8f0; border-radius: 5px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.15);
+      max-height: 140px; overflow-y: auto;
+      display: none; z-index: 300; min-width: 140px; font-size: 11px;
+    }
+    .hist-chip-suggest.visible { display: block; }
+    .hist-chip-suggest-item {
+      padding: 3px 8px; cursor: pointer; white-space: nowrap;
+    }
+    .hist-chip-suggest-item:hover,
+    .hist-chip-suggest-item.active { background: #eaf2ff; color: #1a56db; }
 
     /* メインタブのコンテンツパネル */
     .main-tab-panel { display: none; flex: 1; flex-direction: column; min-height: 0; }
@@ -1295,11 +1329,17 @@ function buildModalHTML(defaultFilename) {
             <button class="main-tab active" id="main-tab-dest">保存先</button>
             <button class="main-tab"        id="main-tab-history">保存履歴</button>
             <div class="history-filter-wrap" id="history-filter-wrap">
-              <input type="text" id="history-filter-input"
-                placeholder="🔍 タグで絞り込み" autocomplete="off" />
+              <div class="hist-chip-box" id="history-filter-box">
+                <input type="text" id="history-filter-input" class="hist-chip-input"
+                  placeholder="🔍 タグで絞り込み" autocomplete="off" />
+                <div class="hist-chip-suggest" id="history-filter-suggest"></div>
+              </div>
               <button class="history-filter-clear" id="history-filter-clear" title="クリア">✕</button>
-              <input type="text" id="history-author-filter"
-                placeholder="✏️ 権利者で絞り込み" autocomplete="off" />
+              <div class="hist-chip-box" id="history-author-filter-box">
+                <input type="text" id="history-author-filter" class="hist-chip-input"
+                  placeholder="✏️ 権利者で絞り込み" autocomplete="off" />
+                <div class="hist-chip-suggest" id="history-author-filter-suggest"></div>
+              </div>
               <button class="history-filter-clear" id="history-author-filter-clear" title="クリア">✕</button>
               <select id="history-filter-mode" class="history-filter-mode-select" title="タグ・作者の絞り込みモード">
                 <option value="and">AND</option>
@@ -1683,8 +1723,11 @@ function setupModalEvents(
   // ================================================================
   // 保存履歴描画
   // ================================================================
-  let historyFilterTag    = ""; // 現在の絞り込みタグ
-  let historyFilterAuthor = ""; // 現在の絞り込み作者
+  // v1.21.1: 絞り込み入力をチップ化。canonical はチップ配列、互換 shadow として文字列を保持。
+  let historyFilterTagChips    = []; // 確定済みタグチップ
+  let historyFilterAuthorChips = []; // 確定済み権利者チップ
+  let historyFilterTag    = ""; // shadow: chips.join(" ")（既存コード互換）
+  let historyFilterAuthor = ""; // shadow: chips.join(" ")（既存コード互換）
   let historyFilterMode   = "and"; // "and" | "or"
   let _historyRenderGen = 0; // renderHistory() の世代番号（非同期競合による二重描画防止）
   let _histPage     = 0;   // 現在ページ（0始まり）
@@ -1702,48 +1745,209 @@ function setupModalEvents(
   const historyAuthorFilterClear = document.getElementById("history-author-filter-clear");
   const historyFilterModeSelect  = document.getElementById("history-filter-mode");
 
-  function setHistoryFilter(tag) {
-    historyFilterTag = tag;
+  // ---- v1.21.1: 履歴絞り込み チップ入力 ----
+  const historyFilterBox         = document.getElementById("history-filter-box");
+  const historyFilterSuggest     = document.getElementById("history-filter-suggest");
+  const historyAuthorFilterBox   = document.getElementById("history-author-filter-box");
+  const historyAuthorFilterSuggest = document.getElementById("history-author-filter-suggest");
+
+  function renderTagChips() {
+    // 既存の chip ノードを除去して再構築
+    Array.from(historyFilterBox.querySelectorAll(".hist-chip")).forEach(n => n.remove());
+    historyFilterTagChips.forEach((chip, idx) => {
+      const el = document.createElement("span");
+      el.className = "hist-chip";
+      el.innerHTML = `${escapeHtml(chip)}<button class="hist-chip-x" data-idx="${idx}" title="削除">×</button>`;
+      historyFilterBox.insertBefore(el, historyFilterInput);
+    });
+    historyFilterClear.classList.toggle("visible", historyFilterTagChips.length > 0);
+  }
+  function renderAuthorChips() {
+    Array.from(historyAuthorFilterBox.querySelectorAll(".hist-chip")).forEach(n => n.remove());
+    historyFilterAuthorChips.forEach((chip, idx) => {
+      const el = document.createElement("span");
+      el.className = "hist-chip author";
+      el.innerHTML = `${escapeHtml(chip)}<button class="hist-chip-x" data-idx="${idx}" title="削除">×</button>`;
+      historyAuthorFilterBox.insertBefore(el, historyAuthorFilter);
+    });
+    historyAuthorFilterClear.classList.toggle("visible", historyFilterAuthorChips.length > 0);
+  }
+
+  function setHistoryTagChips(chips) {
+    historyFilterTagChips = chips;
+    historyFilterTag = chips.join(" "); // shadow
     _histPage = 0;
-    historyFilterInput.value = tag;
-    historyFilterClear.classList.toggle("visible", tag !== "");
+    renderTagChips();
+    renderHistory();
+  }
+  function setHistoryAuthorChips(chips) {
+    historyFilterAuthorChips = chips;
+    historyFilterAuthor = chips.join(" "); // shadow
+    _histPage = 0;
+    renderAuthorChips();
     renderHistory();
   }
 
-  // タグチップクリック：既存フィルタートークンへの追加・除去（トグル）
+  // 既存コードからの呼び出し互換（タグクリックでトグル）
   function toggleHistoryFilterTag(tag) {
-    const tokens = historyFilterTag ? historyFilterTag.split(/\s+/).filter(Boolean) : [];
-    const idx = tokens.indexOf(tag);
+    const key = tag;
+    const idx = historyFilterTagChips.indexOf(key);
     if (idx !== -1) {
-      tokens.splice(idx, 1);
+      const next = [...historyFilterTagChips];
+      next.splice(idx, 1);
+      setHistoryTagChips(next);
     } else {
-      tokens.push(tag);
+      setHistoryTagChips([...historyFilterTagChips, key]);
     }
-    setHistoryFilter(tokens.join(" "));
   }
-
+  // 作者チップクリック：履歴パネルからの呼び出し互換
   function setHistoryAuthorFilter(author) {
-    historyFilterAuthor = author;
-    _histPage = 0;
-    historyAuthorFilter.value = author;
-    historyAuthorFilterClear.classList.toggle("visible", author !== "");
-    renderHistory();
+    if (!author) { setHistoryAuthorChips([]); return; }
+    setHistoryAuthorChips([author]);
   }
 
-  historyFilterInput.addEventListener("input", () => {
-    historyFilterTag = historyFilterInput.value;
-    historyFilterClear.classList.toggle("visible", historyFilterTag !== "");
-    renderHistory();
-  });
-  historyFilterClear.addEventListener("click", () => setHistoryFilter(""));
+  /**
+   * チップ入力の共通セットアップ
+   *   box: .hist-chip-box 要素
+   *   input: 入力欄
+   *   suggest: サジェスト <div>
+   *   commitOnSpace: 半角スペースで確定するか（タグ=true、権利者=false）
+   *   getSuggestions: () => Promise<string[]>
+   *   getChips / setChips: 状態アクセサ
+   */
+  function _setupHistoryChipInput({ box, input, suggest, commitOnSpace, getSuggestions, getChips, setChips }) {
+    let activeIdx = -1;
 
-  historyAuthorFilter.addEventListener("input", () => {
-    historyFilterAuthor = historyAuthorFilter.value;
-    _histPage = 0;
-    historyAuthorFilterClear.classList.toggle("visible", historyFilterAuthor !== "");
-    renderHistory();
+    function hideSuggest() {
+      suggest.classList.remove("visible");
+      activeIdx = -1;
+    }
+    async function showSuggest(q) {
+      const list = await getSuggestions();
+      const qLower = (q || "").toLowerCase();
+      const chips = new Set(getChips());
+      const filtered = (list || [])
+        .filter(x => !chips.has(x))
+        .filter(x => qLower === "" || x.toLowerCase().includes(qLower))
+        .slice(0, 30);
+      if (filtered.length === 0) { hideSuggest(); return; }
+      suggest.innerHTML = filtered
+        .map((x, i) => `<div class="hist-chip-suggest-item${i === 0 ? " active" : ""}" data-value="${escapeHtml(x)}">${escapeHtml(x)}</div>`)
+        .join("");
+      activeIdx = 0;
+      suggest.classList.add("visible");
+    }
+    function setActive(idx) {
+      const items = Array.from(suggest.querySelectorAll(".hist-chip-suggest-item"));
+      if (!items.length) return;
+      const n = items.length;
+      activeIdx = ((idx % n) + n) % n;
+      items.forEach((it, i) => it.classList.toggle("active", i === activeIdx));
+      items[activeIdx].scrollIntoView({ block: "nearest" });
+    }
+    function commitInput(raw) {
+      const val = (raw ?? input.value).trim();
+      if (!val) return false;
+      const chips = getChips();
+      if (chips.includes(val)) { input.value = ""; return true; }
+      setChips([...chips, val]);
+      input.value = "";
+      return true;
+    }
+
+    input.addEventListener("focus", () => {
+      box.classList.add("focus");
+      showSuggest(input.value);
+    });
+    input.addEventListener("blur", () => {
+      box.classList.remove("focus");
+      // 少し遅延してクリックを通す
+      setTimeout(hideSuggest, 150);
+    });
+    input.addEventListener("input", () => {
+      showSuggest(input.value);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const items = Array.from(suggest.querySelectorAll(".hist-chip-suggest-item"));
+        if (suggest.classList.contains("visible") && items[activeIdx]) {
+          commitInput(items[activeIdx].dataset.value);
+        } else {
+          commitInput();
+        }
+        showSuggest("");
+      } else if (e.key === "," || (commitOnSpace && e.key === " ")) {
+        if (input.value.trim()) {
+          e.preventDefault();
+          commitInput();
+          showSuggest("");
+        }
+      } else if (e.key === "Backspace" && input.value === "") {
+        const chips = getChips();
+        if (chips.length > 0) {
+          setChips(chips.slice(0, -1));
+        }
+      } else if (e.key === "ArrowDown") {
+        if (suggest.classList.contains("visible")) { e.preventDefault(); setActive(activeIdx + 1); }
+      } else if (e.key === "ArrowUp") {
+        if (suggest.classList.contains("visible")) { e.preventDefault(); setActive(activeIdx - 1); }
+      } else if (e.key === "Escape") {
+        hideSuggest();
+        input.blur();
+      }
+    });
+
+    suggest.addEventListener("mousedown", (e) => {
+      const item = e.target.closest(".hist-chip-suggest-item");
+      if (!item) return;
+      e.preventDefault(); // blur による hideSuggest を抑止
+      commitInput(item.dataset.value);
+      // 続けて選びやすいよう再表示
+      showSuggest("");
+      input.focus();
+    });
+
+    // チップ削除（×ボタン）
+    box.addEventListener("click", (e) => {
+      const btn = e.target.closest(".hist-chip-x");
+      if (!btn) return;
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.idx, 10);
+      const chips = [...getChips()];
+      chips.splice(idx, 1);
+      setChips(chips);
+    });
+    // 箱内クリックで input にフォーカス
+    box.addEventListener("click", (e) => {
+      if (e.target === box) input.focus();
+    });
+  }
+
+  _setupHistoryChipInput({
+    box: historyFilterBox,
+    input: historyFilterInput,
+    suggest: historyFilterSuggest,
+    commitOnSpace: true,
+    getSuggestions: async () => {
+      const { globalTags } = await browser.storage.local.get("globalTags");
+      return globalTags || [];
+    },
+    getChips: () => historyFilterTagChips,
+    setChips: setHistoryTagChips,
   });
-  historyAuthorFilterClear.addEventListener("click", () => setHistoryAuthorFilter(""));
+  _setupHistoryChipInput({
+    box: historyAuthorFilterBox,
+    input: historyAuthorFilter,
+    suggest: historyAuthorFilterSuggest,
+    commitOnSpace: false, // 権利者名はスペースを含むことがあるため
+    getSuggestions: async () => globalAuthors || [],
+    getChips: () => historyFilterAuthorChips,
+    setChips: setHistoryAuthorChips,
+  });
+
+  historyFilterClear.addEventListener("click", () => setHistoryTagChips([]));
+  historyAuthorFilterClear.addEventListener("click", () => setHistoryAuthorChips([]));
 
   if (historyFilterModeSelect) {
     historyFilterModeSelect.addEventListener("change", () => {
@@ -1774,23 +1978,26 @@ function setupModalEvents(
       return;
     }
 
-    // フィルタ適用（タグ・作者 絞り込み）
-    const filterQ       = historyFilterTag.trim().toLowerCase();
-    const filterTokens  = filterQ ? filterQ.split(/\s+/).filter(Boolean) : [];
-    const authorQ       = historyFilterAuthor.trim().toLowerCase();
-    let filtered        = saveHistory;
-    const hasTagFilter  = filterTokens.length > 0;
-    const hasAuthFilter = !!authorQ;
+    // フィルタ適用（タグ・作者 絞り込み） — v1.21.1: チップ配列を canonical として使用
+    const tagChipsLower    = historyFilterTagChips.map(c => c.toLowerCase());
+    const authorChipsLower = historyFilterAuthorChips.map(c => c.toLowerCase());
+    let filtered           = saveHistory;
+    const hasTagFilter     = tagChipsLower.length > 0;
+    const hasAuthFilter    = authorChipsLower.length > 0;
     if (hasTagFilter || hasAuthFilter) {
       filtered = filtered.filter(e => {
         const entryTags = (e.tags || []).map(t => t.toLowerCase());
         const tagMatch = !hasTagFilter || (
           historyFilterMode === "and"
-            ? filterTokens.every(token => entryTags.some(t => t === token))
-            : filterTokens.some(token => entryTags.some(t => t === token))
+            ? tagChipsLower.every(chip => entryTags.some(t => t === chip))
+            : tagChipsLower.some(chip => entryTags.some(t => t === chip))
         );
         const eAuthors = (e.authors || (e.author ? [e.author] : [])).map(a => a.toLowerCase());
-        const authorMatch = !hasAuthFilter || eAuthors.some(a => a === authorQ);
+        const authorMatch = !hasAuthFilter || (
+          historyFilterMode === "and"
+            ? authorChipsLower.every(chip => eAuthors.some(a => a === chip))
+            : authorChipsLower.some(chip => eAuthors.some(a => a === chip))
+        );
         // 両フィルター有効時のみモードを適用。片方のみの場合は active 側の結果をそのまま返す
         if (hasTagFilter && hasAuthFilter) {
           return historyFilterMode === "and" ? (tagMatch && authorMatch) : (tagMatch || authorMatch);
@@ -1997,14 +2204,13 @@ function setupModalEvents(
       const isMulti = paths.length > 1;
 
       const savedDate = new Date(entry.savedAt).toLocaleString("ja-JP");
-      const activeTokens = historyFilterTag
-        ? new Set(historyFilterTag.split(/\s+/).filter(Boolean))
-        : new Set();
+      const activeTokens = new Set(historyFilterTagChips.map(c => c.toLowerCase()));
+      const activeAuthors = new Set(historyFilterAuthorChips.map(c => c.toLowerCase()));
       const tagHtml = (entry.tags || [])
         .map(t => `<span class="history-tag${activeTokens.has(t.toLowerCase()) ? ' filter-active' : ''}" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</span>`).join("");
       const entryAuthors = entry.authors || (entry.author ? [entry.author] : []);
       const authorHtml = entryAuthors.map(a =>
-        `<span class="history-author${historyFilterAuthor && a.toLowerCase().includes(historyFilterAuthor.toLowerCase()) ? ' filter-active' : ''}" data-author="${escapeHtml(a)}">✏️ ${escapeHtml(a)}</span>`
+        `<span class="history-author${activeAuthors.has(a.toLowerCase()) ? ' filter-active' : ''}" data-author="${escapeHtml(a)}">✏️ ${escapeHtml(a)}</span>`
       ).join("");
 
       const pathLabel = isMulti
@@ -2404,7 +2610,15 @@ function setupModalEvents(
       const author = e.target.dataset?.author;
       if (!author) return;
       e.stopPropagation();
-      setHistoryAuthorFilter(historyFilterAuthor === author ? "" : author);
+      // チップ配列上でトグル
+      const idx = historyFilterAuthorChips.indexOf(author);
+      if (idx !== -1) {
+        const next = [...historyFilterAuthorChips];
+        next.splice(idx, 1);
+        setHistoryAuthorChips(next);
+      } else {
+        setHistoryAuthorChips([...historyFilterAuthorChips, author]);
+      }
     }
   });
 
@@ -3459,10 +3673,16 @@ function setupModalEvents(
       selectedSubTags.splice(selectedSubTags.indexOf(tag), 1);
     });
     subTagInput.value = "";
-    hideSubSuggestions();
     // サブタグ直近リストを更新
     browser.runtime.sendMessage({ type: "UPDATE_RECENT_SUBTAGS", tags: [tag] }).catch(() => {});
     recentSubTagsList = [tag, ...recentSubTagsList.filter(t => t !== tag)].slice(0, 20);
+    // v1.21.1: 入力中にフォーカスがある場合は続けて選べるよう再表示。
+    // フォーカスが外れている（外部呼び出し：初期復元など）ときは非表示のまま。
+    if (document.activeElement === subTagInput) {
+      showSubSuggestions("");
+    } else {
+      hideSubSuggestions();
+    }
   }
 
   function showSubSuggestions(q) {

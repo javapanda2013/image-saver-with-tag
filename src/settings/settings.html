@@ -355,6 +355,47 @@
       padding: 4px 8px; font-size: 11px; outline: none; font-family: inherit;
     }
     .hist-toolbar-filters-row input[type="text"]:focus { border-color: #4a90e2; }
+    /* 絞り込みチップ化（v1.21.1） */
+    .hist-chip-wrap {
+      position: relative;
+      display: flex; flex-wrap: wrap; gap: 3px; align-items: center;
+      min-width: 160px; max-width: 360px;
+      border: 1px solid #d0d0d0; border-radius: 5px;
+      padding: 2px 4px; background: #fff; cursor: text;
+    }
+    .hist-chip-wrap.focused { border-color: #4a90e2; }
+    .hist-chip-wrap input[type="text"].hist-chip-input {
+      border: none !important; padding: 2px 4px !important;
+      width: auto !important; min-width: 60px; flex: 1;
+      font-size: 11px; font-family: inherit; outline: none;
+    }
+    .hist-chip-wrap input[type="text"].hist-chip-input:focus { border-color: transparent !important; }
+    .hist-chip {
+      display: inline-flex; align-items: center; gap: 2px;
+      background: #ddeaff; border: 1px solid #4a90e2; color: #2c5aa0;
+      border-radius: 10px; padding: 1px 6px; font-size: 11px;
+      white-space: nowrap;
+    }
+    .hist-chip.author { background: #e8f5e9; border-color: #4caf50; color: #2e6e3c; }
+    .hist-chip button {
+      background: none; border: none; cursor: pointer;
+      color: inherit; font-size: 11px; padding: 0; line-height: 1;
+    }
+    .hist-chip button:hover { color: #e74c3c; }
+    .hist-chip-suggest {
+      position: absolute; top: 100%; left: 0; z-index: 20;
+      min-width: 160px; max-width: 280px;
+      background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;
+      max-height: 160px; overflow-y: auto;
+      box-shadow: 0 4px 12px rgba(0,0,0,.12);
+      display: none; margin-top: 2px;
+    }
+    .hist-chip-suggest.visible { display: block; }
+    .hist-chip-suggest .hist-sug-item {
+      padding: 5px 10px; cursor: pointer; font-size: 12px; color: #1a1a1a;
+    }
+    .hist-chip-suggest .hist-sug-item:hover,
+    .hist-chip-suggest .hist-sug-item.active { background: #f0f4ff; }
     .hist-btn-sm {
       background: none; border: none; cursor: pointer;
       font-size: 11px; color: #aaa; padding: 2px 5px; border-radius: 3px;
@@ -1044,9 +1085,17 @@
             <option value="or">OR</option>
             <option value="and">AND</option>
           </select>
-          <input type="text" id="hist-filter" placeholder="🔍 タグで絞り込み（スペース区切りで複数）" autocomplete="off" />
+          <div id="hist-filter-wrap" class="hist-chip-wrap" title="タグで絞り込み（複数チップで OR/AND 切替）">
+            <input type="text" id="hist-filter" class="hist-chip-input"
+              placeholder="🔍 タグで絞り込み" autocomplete="off" />
+            <div id="hist-filter-suggest" class="hist-chip-suggest"></div>
+          </div>
           <button id="hist-filter-clear" class="hist-btn-sm" title="絞り込みクリア" style="display:none">✕</button>
-          <input type="text" id="hist-author-filter" placeholder="✏️ 権利者で絞り込み" autocomplete="off" />
+          <div id="hist-author-filter-wrap" class="hist-chip-wrap" title="権利者で絞り込み">
+            <input type="text" id="hist-author-filter" class="hist-chip-input"
+              placeholder="✏️ 権利者で絞り込み" autocomplete="off" />
+            <div id="hist-author-filter-suggest" class="hist-chip-suggest"></div>
+          </div>
           <button id="hist-author-filter-clear" class="hist-btn-sm" title="権利者フィルタークリア" style="display:none">✕</button>
           <select id="hist-source-filter" title="取り込み元で絞り込み" style="font-size:11px;padding:2px 4px;border:1px solid #dde;border-radius:4px;background:#fff;color:#444;cursor:pointer;font-family:inherit;">
             <option value="">取り込み元: すべて</option>
