@@ -43,6 +43,8 @@ let authorDestinations = {};
 let _histAuthorFilter  = "";
 // 保存履歴の取り込み元フィルター ("" | "external_import" | "normal")
 let _histSourceFilter  = "";
+// 保存履歴の GIF フィルター（v1.22.2）
+let _histGifFilter     = false;
 
 // 開いているタグ行のセット（折りたたみ状態の管理）
 const openTags = new Set();
@@ -1805,7 +1807,8 @@ function setupHistoryTab() {
     selectAllBtn.disabled =
       _histFilterTagChips.length === 0 &&
       _histFilterAuthorChips.length === 0 &&
-      !_histSourceFilter;
+      !_histSourceFilter &&
+      !_histGifFilter;
   }
   _updateSelectAllBtn = updateSelectAllBtn; // グローバル参照を更新
 
@@ -2439,6 +2442,14 @@ function setupHistoryTab() {
     });
   }
 
+  // GIF フィルター（v1.22.2）
+  document.getElementById("hist-gif-filter")?.addEventListener("change", (e) => {
+    _histGifFilter = e.target.checked;
+    _histPage = 0;
+    updateSelectAllBtn();
+    renderHistoryGrid();
+  });
+
   // タグ・保存先反映ボタン
   // - タグ・サブタグを globalTags に追加
   // - メインタグの保存先を tagDestinations に追記（サブタグは除外）
@@ -2509,15 +2520,16 @@ function renderHistoryGrid() {
   const hasTagFilter    = _histFilterTagChips.length > 0;
   const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
+  const hasGifFilter    = _histGifFilter;
 
-  const filtered = (hasTagFilter || hasAuthorFilter || hasSourceFilter)
+  const filtered = (hasTagFilter || hasAuthorFilter || hasSourceFilter || hasGifFilter)
     ? _historyData.filter(e => _entryMatchesCurrentFilter(e))
     : _historyData;
 
   // 絞り込み結果をライトボックスのグローバルナビ用に保持
-  _currentFilteredHistory = (hasTagFilter || hasAuthorFilter || hasSourceFilter) ? filtered : null;
+  _currentFilteredHistory = (hasTagFilter || hasAuthorFilter || hasSourceFilter || hasGifFilter) ? filtered : null;
 
-  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter;
+  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter || hasGifFilter;
   const totalFiltered = filtered.length;
 
   // ページ範囲補正
@@ -2883,7 +2895,11 @@ function _entryMatchesCurrentFilter(entry) {
   const hasTagFilter    = _histFilterTagChips.length > 0;
   const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
-  if (!hasTagFilter && !hasAuthorFilter && !hasSourceFilter) return true;
+  const hasGifFilter    = _histGifFilter;
+  if (!hasTagFilter && !hasAuthorFilter && !hasSourceFilter && !hasGifFilter) return true;
+
+  // GIF フィルター（v1.22.2）
+  if (hasGifFilter && !/\.gif$/i.test(entry.filename || "")) return false;
 
   const entryTags = (entry.tags || []).map(t => t.toLowerCase());
   const tagMatch = !hasTagFilter || (
@@ -3070,7 +3086,8 @@ function _updateHistCount() {
   const hasTagFilter    = _histFilterTagChips.length > 0;
   const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
-  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter;
+  const hasGifFilter    = _histGifFilter;
+  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter || hasGifFilter;
   const filtered = isFiltering
     ? _historyData.filter(_entryMatchesCurrentFilter)
     : _historyData;
