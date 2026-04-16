@@ -1618,6 +1618,30 @@ async function setupHistoryDisplayMode() {
 }
 
 /**
+ * 文字列正規化（v1.21.3）
+ * サジェストのマッチで使用：
+ * - NFKC で半角カナ→全角カナ・全角英数→半角英数を統一
+ * - カタカナ → ひらがな（U+30A1〜U+30F6 を -0x60 シフト）
+ * - 小文字化
+ * これにより「アサ」「あさ」「ｱｻ」「Asa」「ＡＳＡ」が同一視される。
+ */
+function _normalizeForMatch(s) {
+  if (!s) return "";
+  let t = String(s).normalize("NFKC").toLowerCase();
+  let out = "";
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i);
+    // カタカナ U+30A1..U+30F6 → ひらがな U+3041..U+3096
+    if (c >= 0x30a1 && c <= 0x30f6) {
+      out += String.fromCharCode(c - 0x60);
+    } else {
+      out += t[i];
+    }
+  }
+  return out;
+}
+
+/**
  * 履歴絞り込みチップ入力コントローラ（v1.21.1）
  * タグ絞り込み / 権利者絞り込みで共通利用。
  *
@@ -1679,14 +1703,17 @@ function _setupHistChipInput({
   }
 
   async function showSuggest() {
-    const q = input.value.trim().toLowerCase();
+    const qRaw = input.value.trim();
     // v1.21.2: 未入力時はサジェスト非表示（従来は全件古い順 8 件を固定表示していたが意味が薄い）
-    if (!q) { hideSuggest(); return; }
+    if (!qRaw) { hideSuggest(); return; }
+    // v1.21.3: かな/カナ・半角/全角を無視して比較
+    const qNorm = _normalizeForMatch(qRaw);
     const src = (await getSuggestions()) || [];
     const chips = getChips();
     // v1.21.2: 前方一致（startsWith）に変更。部分一致だと候補が広くなりすぎるため
+    // v1.21.3: 比較は _normalizeForMatch を介して行う
     const matches = src
-      .filter(v => v.toLowerCase().startsWith(q))
+      .filter(v => _normalizeForMatch(v).startsWith(qNorm))
       .filter(v => !chips.includes(v.toLowerCase()))
       .slice(0, 8);
     if (!matches.length) { hideSuggest(); return; }

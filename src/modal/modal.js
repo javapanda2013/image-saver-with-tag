@@ -1807,6 +1807,29 @@ function setupModalEvents(
   }
 
   /**
+   * 文字列正規化（v1.21.3）
+   * サジェストのマッチで使用：
+   * - NFKC で半角カナ→全角カナ・全角英数→半角英数を統一
+   * - カタカナ → ひらがな（U+30A1〜U+30F6 を -0x60 シフト）
+   * - 小文字化
+   * これにより「アサ」「あさ」「ｱｻ」「Asa」「ＡＳＡ」が同一視される。
+   */
+  function _normalizeForMatch(s) {
+    if (!s) return "";
+    let t = String(s).normalize("NFKC").toLowerCase();
+    let out = "";
+    for (let i = 0; i < t.length; i++) {
+      const c = t.charCodeAt(i);
+      if (c >= 0x30a1 && c <= 0x30f6) {
+        out += String.fromCharCode(c - 0x60);
+      } else {
+        out += t[i];
+      }
+    }
+    return out;
+  }
+
+  /**
    * チップ入力の共通セットアップ
    *   box: .hist-chip-box 要素
    *   input: 入力欄
@@ -1823,15 +1846,18 @@ function setupModalEvents(
       activeIdx = -1;
     }
     async function showSuggest(q) {
-      const qLower = (q || "").trim().toLowerCase();
+      const qRaw = (q || "").trim();
       // v1.21.2: 未入力時はサジェスト非表示（従来は全件表示していたが意味が薄い）
-      if (!qLower) { hideSuggest(); return; }
+      if (!qRaw) { hideSuggest(); return; }
+      // v1.21.3: かな/カナ・半角/全角を無視して比較
+      const qNorm = _normalizeForMatch(qRaw);
       const list = await getSuggestions();
       const chips = new Set(getChips());
       // v1.21.2: 前方一致（startsWith）に変更
+      // v1.21.3: 比較は _normalizeForMatch を介して行う
       const filtered = (list || [])
         .filter(x => !chips.has(x))
-        .filter(x => x.toLowerCase().startsWith(qLower))
+        .filter(x => _normalizeForMatch(x).startsWith(qNorm))
         .slice(0, 30);
       if (filtered.length === 0) { hideSuggest(); return; }
       suggest.innerHTML = filtered
