@@ -348,13 +348,11 @@ function buildModalHTML(defaultFilename) {
 
     /* suggestions の位置基準 */
     .dest-tabbar-tag-wrap {
-      position: relative; display: flex; flex-direction: column; flex: 1;
-      /* max-width を削除：tag-toolbar 内で均等に広がる */
+      position: relative; display: flex; flex-direction: column; flex: 0 0 auto; max-width: 340px; width: 340px;
     }
-    /* サブタグ入力欄 */
+    /* サブタグ入力欄：タグ入力欄より少し幅狭 */
     .dest-tabbar-subtag-wrap {
-      position: relative; display: flex; flex-direction: column; flex: 1;
-      /* max-width を削除：tag-toolbar 内で均等に広がる */
+      position: relative; display: flex; flex-direction: column; flex: 0 0 auto; max-width: 240px; width: 240px;
     }
     .dest-tabbar-subtag-wrap .dest-tabbar-tag-area {
       border-color: #d0c8f0; /* 薄紫でタグ欄と区別 */
@@ -592,7 +590,7 @@ function buildModalHTML(defaultFilename) {
 
     /* tag-toolbar：タグ入力欄（dest-tabbar の直前に常時表示） */
     #tag-toolbar {
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: 6px; justify-content: flex-start;
       background: #f4f7ff; border-bottom: 1px solid #d8e6f8;
       padding: 4px 8px; flex-shrink: 0;
     }
@@ -1402,11 +1400,10 @@ function buildModalHTML(defaultFilename) {
               </div>
             </div>
 
-            <!-- a2: タブバー（dest-tabbar）：ボタンのみ、右端にフィルタ・新規作成ボタン -->
+            <!-- a2: タブバー（dest-tabbar）：タブ＋フィルタ・新規作成ボタンを左寄せ -->
             <div class="dest-tabbar" id="dest-tabbar">
               <button class="dest-tab active" id="dest-tab-suggest">💡 候補から選ぶ</button>
               <button class="dest-tab"        id="dest-tab-explorer">📁 フォルダを選ぶ</button>
-              <div style="flex:1;"></div>
               <button class="btn-tag-filter" id="btn-tag-filter"
                 title="タグ名でフォルダを絞り込む" disabled>🔍 タグで絞り込み</button>
               <button class="new-folder-tag-btn" id="new-folder-tag-btn"
