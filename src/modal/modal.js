@@ -1385,14 +1385,14 @@ function buildModalHTML(defaultFilename) {
 
             <!-- a2: タグ入力行（常時表示） -->
             <div id="tag-toolbar">
-              <div class="dest-tabbar-tag-wrap" style="flex:1; max-width:none;">
+              <div class="dest-tabbar-tag-wrap">
                 <div class="dest-tabbar-tag-area" id="dest-tabbar-tag-area">
                   <input type="text" class="dest-tabbar-tag-input" id="tag-input"
                     placeholder="保存先に関連付けるタグを入力" autocomplete="off" />
                 </div>
                 <div class="suggestions" id="suggestions"></div>
               </div>
-              <div class="dest-tabbar-subtag-wrap" style="flex:1; max-width:none;">
+              <div class="dest-tabbar-subtag-wrap">
                 <div class="dest-tabbar-tag-area" id="dest-tabbar-subtag-area">
                   <input type="text" class="dest-tabbar-tag-input" id="subtag-input"
                     placeholder="履歴に付与するタグ" autocomplete="off"

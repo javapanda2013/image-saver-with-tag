@@ -5391,7 +5391,7 @@ function _extRenderFolderList() {
     btnBatch.className = "backup-btn";
     btnBatch.style.cssText = "padding:2px 6px;font-size:10px;background:#e8f5e9;border-color:#a5d6a7;";
     btnBatch.title = "このフォルダだけ一括取り込み";
-    btnBatch.textContent = "📦";
+    btnBatch.textContent = "📦 一括取り込み";
     btnBatch.addEventListener("click", async () => {
       const rBatch = document.getElementById("ext-mode-batch");
       if (rBatch && !rBatch.checked) { rBatch.checked = true; rBatch.dispatchEvent(new Event("change")); }
@@ -5402,7 +5402,7 @@ function _extRenderFolderList() {
     btnPer.className = "backup-btn";
     btnPer.style.cssText = "padding:2px 6px;font-size:10px;background:#e3f2fd;border-color:#90caf9;";
     btnPer.title = "このフォルダだけ1枚ずつ取り込み";
-    btnPer.textContent = "📥";
+    btnPer.textContent = "📥 1枚ずつ取り込み";
     btnPer.addEventListener("click", () => {
       const rPer = document.getElementById("ext-mode-per-item");
       if (rPer && !rPer.checked) { rPer.checked = true; rPer.dispatchEvent(new Event("change")); }
@@ -5413,7 +5413,7 @@ function _extRenderFolderList() {
     btnDel.className = "backup-btn";
     btnDel.style.cssText = "padding:2px 6px;font-size:10px;";
     btnDel.title = "削除";
-    btnDel.textContent = "🗑";
+    btnDel.textContent = "🗑 リストから削除";
     btnDel.addEventListener("click", async () => {
       const label = subfolderPath || item.rootPath;
       if (!confirm(`「${label}」をリストから削除しますか？`)) return;
