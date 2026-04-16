@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 image_saver.py  —  Firefox Native Messaging ホスト
-version: 1.9.6
+version: 1.9.7
 
 受け取るコマンド:
   {"cmd": "LIST_DIR",      "path": null}
@@ -21,6 +21,8 @@ import string
 import base64
 import ctypes
 import re
+import tempfile
+import hashlib
 import unicodedata
 from datetime import datetime
 
@@ -544,14 +546,13 @@ def handle_read_file_base64(path):
     """
     ローカルファイルを読み込み、Base64 data URL として返す。
     保存履歴の「保存した画像を開く」でブラウザ別タブ表示に使用。
-    GIF はアニメーションを保持するため生バイトをそのまま返す（最大1600pxにリサイズ）。
     非GIF は Pillow で JPEG 変換し 2MB 以内に収める。
 
-    v1.9.6:
-      - GIF の全アニメ生成試行が失敗した場合、第1フレーム JPEG への暫定フォールバックを追加。
-        静止画にはなるが「何も表示されない」状態を回避する。
-      - 各ステージで stderr にログを吐き、Native 切断時の原因特定を支援。
-      - BaseException まで捕捉（MemoryError などを含む）し、プロセスクラッシュを防ぐ。
+    v1.9.7:
+      - GIF は第1フレーム JPEG フォールバックを廃止し、全フレーム保持のまま
+        JS 側から READ_FILE_CHUNK で分割取得させる方針へ変更。
+      - GIF の場合は {ok: true, useChunks: true, totalSize, mime: "image/gif"}
+        を返し、JS 側で読み取りとアニメーション再生を行う。
     """
     def _slog(msg):
         try:
@@ -564,109 +565,26 @@ def handle_read_file_base64(path):
         if not os.path.isfile(path):
             return {"ok": False, "error": f"ファイルが存在しません: {path}"}
 
+        # GIF は分割読み込みに切り替える（第1フレームへの縮退はしない）
+        if path.lower().endswith(".gif"):
+            try:
+                total_size = os.path.getsize(path)
+                _slog(f"gif defer to chunks: {path} size={total_size}")
+                return {
+                    "ok": True,
+                    "useChunks": True,
+                    "totalSize": total_size,
+                    "mime": "image/gif",
+                    "sourcePath": path,
+                }
+            except BaseException as e:
+                _slog(f"gif size probe failed: {type(e).__name__}: {e}")
+                return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
         _slog(f"open: {path}")
         with open(path, "rb") as f:
             data = f.read()
         _slog(f"read ok: size={len(data)}")
-
-        # GIF はアニメーション情報を維持するため Pillow JPEG 変換をスキップする
-        if path.lower().endswith(".gif"):
-            # Native Messaging の 1MB 上限を超えないように、出力サイズをチェックしつつ段階的に縮小する
-            # （生データフォールバックは Native 切断の原因になるため廃止）
-            MAX_GIF_BYTES = 700 * 1024  # Base64 化後 ~933KB → JSON 全体 1MB 未満
-            diagnostic = {"rawSize": len(data), "attempts": []}
-
-            # 元 GIF の幅・高さ・フレーム数を取得（ベストエフォート）
-            try:
-                from PIL import Image as _Image, ImageSequence as _ISeq
-                import io as _io2
-                _img = _Image.open(_io2.BytesIO(data))
-                diagnostic["origWidth"] = _img.size[0]
-                diagnostic["origHeight"] = _img.size[1]
-                diagnostic["frameCount"] = sum(1 for _ in _ISeq.Iterator(_img))
-                _slog(f"gif meta ok: {diagnostic['origWidth']}x{diagnostic['origHeight']} frames={diagnostic['frameCount']}")
-            except BaseException as e:
-                diagnostic["openError"] = f"{type(e).__name__}: {e}"
-                _slog(f"gif meta fail: {type(e).__name__}: {e}")
-
-            # ステージ1: アニメ GIF サムネイル生成（段階的縮小）
-            for max_size in (800, 400, 200):
-                _slog(f"gif attempt max_size={max_size}")
-                _errs = []
-                try:
-                    gif_bytes, _, _ = make_gif_thumbnail(data, max_size=max_size, _errors=_errs)
-                except BaseException as e:
-                    diagnostic["attempts"].append({
-                        "maxSize": max_size,
-                        "error": f"raised: {type(e).__name__}: {e}",
-                    })
-                    _slog(f"gif attempt raised: {type(e).__name__}: {e}")
-                    continue
-                if gif_bytes is None:
-                    diagnostic["attempts"].append({
-                        "maxSize": max_size,
-                        "error": _errs[0] if _errs else "unknown",
-                    })
-                    _slog(f"gif attempt returned None: {_errs[0] if _errs else 'unknown'}")
-                    continue
-                size = len(gif_bytes)
-                within = size <= MAX_GIF_BYTES
-                diagnostic["attempts"].append({
-                    "maxSize": max_size,
-                    "outputBytes": size,
-                    "withinLimit": within,
-                })
-                _slog(f"gif attempt ok size={size} within={within}")
-                if within:
-                    data_url = "data:image/gif;base64," + base64.b64encode(gif_bytes).decode("ascii")
-                    return {"ok": True, "dataUrl": data_url}
-
-            # ステージ2（v1.9.6 暫定対策）: 全サイズで失敗 or 上限超過 →
-            # 第1フレームを静止 JPEG としてフォールバック返却。少なくとも何か表示させる。
-            _slog("gif all attempts failed, falling back to first-frame JPEG")
-            try:
-                from PIL import Image as _ImageF, ImageSequence as _ISeqF
-                import io as _ioF
-                _img2 = _ImageF.open(_ioF.BytesIO(data))
-                _first = None
-                for _frame in _ISeqF.Iterator(_img2):
-                    _first = _frame.convert("RGB")
-                    break
-                if _first is None:
-                    diagnostic["fallbackError"] = "no frames in GIF"
-                    _slog("fallback fail: no frames")
-                    return {"ok": False, "error": "GIF からフレームを抽出できませんでした。", "diagnostic": diagnostic}
-
-                MAX_FB = 800
-                fw, fh = _first.size
-                fscale = min(MAX_FB / fw, MAX_FB / fh, 1.0)
-                if fscale < 1.0:
-                    _first = _first.resize((max(1, int(fw * fscale)), max(1, int(fh * fscale))), _ImageF.LANCZOS)
-                _fbuf = _ioF.BytesIO()
-                # サイズ制限: 700KB 以内に収める
-                for _q in (85, 70, 55, 40):
-                    _fbuf = _ioF.BytesIO()
-                    _first.save(_fbuf, format="JPEG", quality=_q, optimize=True)
-                    if len(_fbuf.getvalue()) <= 700 * 1024:
-                        break
-                _fb_size = len(_fbuf.getvalue())
-                if _fb_size > 700 * 1024:
-                    diagnostic["fallbackError"] = f"first-frame JPEG too large: {_fb_size}"
-                    _slog(f"fallback fail: jpeg too large ({_fb_size})")
-                    return {"ok": False, "error": "GIF が大きすぎて表示できません。ファイルを直接開いてください。", "diagnostic": diagnostic}
-                diagnostic["fallbackUsed"] = "first_frame_jpeg"
-                diagnostic["fallbackBytes"] = _fb_size
-                _slog(f"fallback ok: jpeg bytes={_fb_size}")
-                data_url = "data:image/jpeg;base64," + base64.b64encode(_fbuf.getvalue()).decode("ascii")
-                return {"ok": True, "dataUrl": data_url, "fallback": "first_frame_jpeg", "diagnostic": diagnostic}
-            except BaseException as e:
-                diagnostic["fallbackError"] = f"{type(e).__name__}: {e}"
-                _slog(f"fallback raised: {type(e).__name__}: {e}")
-                return {
-                    "ok": False,
-                    "error": "GIF が大きすぎて表示できません。ファイルを直接開いてください。",
-                    "diagnostic": diagnostic,
-                }
 
         from PIL import Image
         import io as _io
@@ -691,6 +609,233 @@ def handle_read_file_base64(path):
 
     except BaseException as e:
         _slog(f"top-level except: {type(e).__name__}: {e}")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------
+# v1.9.7: 分割ファイル読み込み・GIF サムネイル一時ファイル生成
+# Native Messaging の 1MB 送信上限を超える GIF を JS 側で組み立てるため
+# ---------------------------------------------------------------
+
+# 一時ファイルの保存先（プロセス寿命中のみ有効）
+_CHUNK_TEMP_DIR = None
+
+
+def _get_chunk_temp_dir():
+    """BorgesTag 用一時ファイル置き場（%TEMP%\\borgestag_chunk_cache\\）を返す。"""
+    global _CHUNK_TEMP_DIR
+    if _CHUNK_TEMP_DIR and os.path.isdir(_CHUNK_TEMP_DIR):
+        return _CHUNK_TEMP_DIR
+    d = os.path.join(tempfile.gettempdir(), "borgestag_chunk_cache")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = tempfile.gettempdir()
+    _CHUNK_TEMP_DIR = d
+    return d
+
+
+def _is_under_chunk_temp_dir(path):
+    """path が一時ディレクトリ配下にあるかを確認する（DELETE_CHUNK_FILE の安全検証用）。"""
+    try:
+        base = os.path.realpath(_get_chunk_temp_dir())
+        target = os.path.realpath(path)
+        return target.startswith(base + os.sep) or target == base
+    except Exception:
+        return False
+
+
+def handle_read_file_chunk(path, offset, max_bytes):
+    """
+    任意のローカルファイルをバイトオフセット指定で読み取り、Base64 で返す。
+    Native Messaging の 1MB 送信上限より十分小さいサイズで返却するため
+    max_bytes のデフォルトは 700KB。
+
+    引数:
+      path:      読み取り対象ファイル（絶対パス）
+      offset:    読み取り開始バイト位置（0 以上）
+      max_bytes: 1 回の応答で返すバイト上限
+
+    戻り値:
+      {ok: True, bytes: "<base64>", offset, length, totalSize, done: bool}
+    """
+    try:
+        if not isinstance(path, str) or not path:
+            return {"ok": False, "error": "path が指定されていません"}
+        if not os.path.isfile(path):
+            return {"ok": False, "error": f"ファイルが存在しません: {path}"}
+        try:
+            offset = int(offset or 0)
+        except Exception:
+            offset = 0
+        try:
+            max_bytes = int(max_bytes or 700 * 1024)
+        except Exception:
+            max_bytes = 700 * 1024
+        if max_bytes <= 0:
+            max_bytes = 700 * 1024
+        # 保険: 800KB を超える単一応答は禁止（1MB 上限からの安全マージン）
+        if max_bytes > 800 * 1024:
+            max_bytes = 800 * 1024
+
+        total = os.path.getsize(path)
+        if offset >= total:
+            return {
+                "ok": True,
+                "bytes": "",
+                "offset": offset,
+                "length": 0,
+                "totalSize": total,
+                "done": True,
+            }
+
+        with open(path, "rb") as f:
+            f.seek(offset)
+            chunk = f.read(max_bytes)
+
+        return {
+            "ok": True,
+            "bytes": base64.b64encode(chunk).decode("ascii"),
+            "offset": offset,
+            "length": len(chunk),
+            "totalSize": total,
+            "done": (offset + len(chunk)) >= total,
+        }
+    except PermissionError:
+        return {"ok": False, "error": f"アクセス権がありません: {path}"}
+    except BaseException as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def handle_make_gif_thumb_file(path, max_size=600):
+    """
+    GIF ファイルから縮小アニメ GIF を生成し、一時ファイルへ書き出してそのパスを返す。
+    JS 側が READ_FILE_CHUNK で分割読み取りする前提の v1.9.7 経路。
+
+    戻り値:
+      {ok, tempPath, totalSize, width, height, mime: "image/gif"}
+    """
+    try:
+        if not os.path.isfile(path):
+            return {"ok": False, "error": f"ファイルが存在しません: {path}"}
+        try:
+            max_size = int(max_size or 600)
+        except Exception:
+            max_size = 600
+        if max_size <= 0:
+            max_size = 600
+
+        with open(path, "rb") as f:
+            data = f.read()
+
+        _errs = []
+        gif_bytes, w, h = make_gif_thumbnail(data, max_size=max_size, _errors=_errs)
+        if gif_bytes is None:
+            err = _errs[0] if _errs else "unknown"
+            return {"ok": False, "error": f"GIF サムネイル生成失敗: {err}"}
+
+        temp_dir = _get_chunk_temp_dir()
+        # 重複を避けるためパス+mtime で一意化
+        try:
+            mtime = int(os.path.getmtime(path))
+        except Exception:
+            mtime = 0
+        key = hashlib.sha1(f"{os.path.abspath(path)}|{mtime}|{max_size}".encode("utf-8")).hexdigest()[:16]
+        temp_path = os.path.join(temp_dir, f"thumb_{key}.gif")
+
+        with open(temp_path, "wb") as tf:
+            tf.write(gif_bytes)
+
+        return {
+            "ok": True,
+            "tempPath": temp_path,
+            "totalSize": len(gif_bytes),
+            "width": w,
+            "height": h,
+            "mime": "image/gif",
+        }
+    except BaseException as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def handle_fetch_preview_gif(url):
+    """
+    GIF URL を取得し、元のアニメーションを保持したまま一時ファイルへ書き出して
+    そのパスを返す。JS 側は READ_FILE_CHUNK で読み取る。
+    通常画像のプレビューは従来の handle_fetch_preview を使用する。
+    """
+    import urllib.parse
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname or ""
+
+        REFERER_MAP = {
+            "i.pximg.net":            "https://www.pixiv.net/",
+            "img-original.pixiv.net": "https://www.pixiv.net/",
+        }
+        referer = next(
+            (v for k, v in REFERER_MAP.items() if hostname == k or hostname.endswith("." + k)),
+            f"{parsed.scheme}://{hostname}/"
+        )
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Referer": referer,
+        }
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as response:
+            data = response.read()
+
+        temp_dir = _get_chunk_temp_dir()
+        key = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+        temp_path = os.path.join(temp_dir, f"preview_{key}.gif")
+        with open(temp_path, "wb") as tf:
+            tf.write(data)
+
+        # ベストエフォートで width/height
+        width = None
+        height = None
+        try:
+            from PIL import Image as _PI
+            import io as _ioP
+            _img = _PI.open(_ioP.BytesIO(data))
+            width, height = _img.size
+        except Exception:
+            pass
+
+        return {
+            "ok": True,
+            "tempPath": temp_path,
+            "totalSize": len(data),
+            "width": width,
+            "height": height,
+            "mime": "image/gif",
+        }
+    except BaseException as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def handle_delete_chunk_file(path):
+    """
+    一時ディレクトリ配下のファイルを削除する（JS 側が読み取り完了後に呼ぶ）。
+    安全のため、_CHUNK_TEMP_DIR 配下でなければ拒否する。
+    """
+    try:
+        if not isinstance(path, str) or not path:
+            return {"ok": False, "error": "path が指定されていません"}
+        if not _is_under_chunk_temp_dir(path):
+            return {"ok": False, "error": "一時ディレクトリ外のため削除できません"}
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        return {"ok": True}
+    except BaseException as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
@@ -1111,6 +1256,26 @@ def _dispatch_command(message):
 
     elif cmd == "FETCH_PREVIEW":
         return handle_fetch_preview(message.get("url", ""))
+
+    # v1.9.7: 大容量 GIF の分割読み込み用コマンド群
+    elif cmd == "READ_FILE_CHUNK":
+        return handle_read_file_chunk(
+            message.get("path", ""),
+            message.get("offset", 0),
+            message.get("maxBytes", 700 * 1024),
+        )
+
+    elif cmd == "MAKE_GIF_THUMB_FILE":
+        return handle_make_gif_thumb_file(
+            message.get("path", ""),
+            message.get("maxSize", 600),
+        )
+
+    elif cmd == "FETCH_PREVIEW_GIF":
+        return handle_fetch_preview_gif(message.get("url", ""))
+
+    elif cmd == "DELETE_CHUNK_FILE":
+        return handle_delete_chunk_file(message.get("path", ""))
 
     else:
         return {"ok": False, "error": f"不明なコマンド: {cmd}"}

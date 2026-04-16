@@ -1517,7 +1517,22 @@ function setupModalEvents(
         type: "FETCH_PREVIEW",
         url: imageUrl,
       });
-      if (res?.dataUrl) previewEl.src = res.dataUrl;
+      if (res?.dataUrl) { previewEl.src = res.dataUrl; return; }
+      // v1.22.9: GIF は base64 チャンクで返るため Blob URL に組み立てる
+      if (res && Array.isArray(res.chunksB64)) {
+        const arrays = [];
+        for (const b64 of res.chunksB64) {
+          const bin = atob(b64);
+          const arr = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          arrays.push(arr);
+        }
+        const blob = new Blob(arrays, { type: res.mime || "image/gif" });
+        const blobUrl = URL.createObjectURL(blob);
+        previewEl.src = blobUrl;
+        // モーダルが閉じられる時点で revoke する手段が無いため、次の src 変更時に
+        // 自動 GC に委ねる（モーダル自体が閉じた際にページごと破棄される）
+      }
     } catch {}
   }, { once: true });
 
@@ -2411,19 +2426,9 @@ function setupModalEvents(
         const p = paths[0];
         if (!p || !entry.filename) { showToast(shadow, "⚠️ 保存先情報が取得できません", true); return; }
         const filePath = p.replace(/[\\/]+$/, "") + "\\" + entry.filename;
-        const res = await browser.runtime.sendMessage({ type: "FETCH_FILE_AS_DATAURL", path: filePath });
-        if (res?.ok && res.dataUrl) {
-          const win = window.open();
-          if (win) {
-            win.document.body.style.cssText = "margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh;";
-            const img = win.document.createElement("img");
-            img.src = res.dataUrl;
-            img.style.cssText = "max-width:100%;max-height:100vh;object-fit:contain;";
-            win.document.body.appendChild(img);
-          }
-        } else {
-          showToast(shadow, `⚠️ ファイルを開けませんでした:\n${res?.error || filePath}`, true);
-        }
+        // v1.22.9: 拡張ページ viewer.html 経由で表示し、大容量 GIF も chunksB64 で描画する。
+        const viewerUrl = browser.runtime.getURL("src/viewer/viewer.html") + "?path=" + encodeURIComponent(filePath);
+        window.open(viewerUrl, "_blank");
       });
       item.querySelector(".history-btn-nav").addEventListener("click", (e) => {
         e.stopPropagation();
@@ -4943,13 +4948,42 @@ async function showModalLightbox(groupEntries, startGroupIdx, allEntries, startG
     const filePath = p.replace(/[\\/]+$/, "") + "\\" + entry.filename;
     const res = await browser.runtime.sendMessage({ type: "FETCH_FILE_AS_DATAURL", path: filePath });
     if (res?.ok && res.dataUrl) {
+      _revokeCurrentBlobUrl();
       img.src = res.dataUrl;
       img.alt = entry.filename;
       if (img.complete && img.naturalWidth) reposNavBtns();
       else img.onload = () => { reposNavBtns(); img.onload = null; };
+    } else if (res?.ok && Array.isArray(res.chunksB64)) {
+      // v1.22.9: 大容量 GIF は base64 チャンクを受け取り、この場で Blob URL を組み立てる
+      try {
+        const arrays = [];
+        for (const b64 of res.chunksB64) {
+          const bin = atob(b64);
+          const arr = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          arrays.push(arr);
+        }
+        const blob = new Blob(arrays, { type: res.mime || "image/gif" });
+        _revokeCurrentBlobUrl();
+        _currentBlobUrl = URL.createObjectURL(blob);
+        img.src = _currentBlobUrl;
+        img.alt = entry.filename;
+        if (img.complete && img.naturalWidth) reposNavBtns();
+        else img.onload = () => { reposNavBtns(); img.onload = null; };
+      } catch (err) {
+        await _loadThumbFallback(entry, `Blob 組み立てに失敗: ${err?.message || err}`);
+      }
     } else {
       const reason = res?.error || "ファイルが見つかりません";
       await _loadThumbFallback(entry, reason);
+    }
+  }
+
+  let _currentBlobUrl = null;
+  function _revokeCurrentBlobUrl() {
+    if (_currentBlobUrl) {
+      try { URL.revokeObjectURL(_currentBlobUrl); } catch (_) {}
+      _currentBlobUrl = null;
     }
   }
 

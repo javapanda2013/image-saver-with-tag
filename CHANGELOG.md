@@ -5,6 +5,27 @@
 
 ---
 
+## [1.22.9] - 2026-04-17
+
+### Changed
+- **GIF アニメーション対応（3 箇所：プレビュー / サムネイル / 保存画像表示）**：Native Messaging の 1MB 上限を超える大容量 GIF を、**フレームを減らさずにアニメーションを保持したまま** 拡張機能内で扱えるようにした。`native/image_saver.py` に以下 4 コマンドを追加：`READ_FILE_CHUNK`（任意ファイルを最大 800KB ずつ分割送信）／`MAKE_GIF_THUMB_FILE`（Pillow でリサイズした GIF を一時ファイルに書き出し）／`FETCH_PREVIEW_GIF`（URL を Referer 付きで取得 → 一時ファイル化）／`DELETE_CHUNK_FILE`（一時ディレクトリ配下のみ許可する安全削除）。
+- **拡張側 3 箇所を Blob URL 組み立てに対応**：
+  - **プレビュー**（`src/modal/modal.js:FETCH_PREVIEW` フォールバック）：応答が `chunksB64` 配列の場合は base64 を `Uint8Array` へ展開して `Blob` + `URL.createObjectURL` で `<img>` に設定。
+  - **サムネイル**（`src/background/background.js:generateMissingThumbs`）：GIF は `MAKE_GIF_THUMB_FILE` → チャンク読み取り → IDB に Blob を直接保存（Canvas リサイズを経由するとアニメが失われるため）。
+  - **保存画像表示**（保存履歴「🖼 保存した画像」）：新設の拡張ページ `src/viewer/viewer.html` に遷移し、`viewer.js` が `FETCH_FILE_AS_DATAURL` の `chunksB64` 応答から Blob URL を組み立てて表示する。`settings.js` / `modal.js` の `open-file` ハンドラを viewer.html 経由に統一。
+  - **モーダル内ライトボックス**（`modal.js:loadEntry`）：GIF の場合は chunksB64 から Blob URL を組み立てて `<img>` に設定。前の Blob URL は `URL.revokeObjectURL` で解放。
+  - **外部取り込みプレビュー**（`settings.js:READ_LOCAL_IMAGE_BASE64` 呼び出し）：同様に chunksB64 → Blob URL 対応。
+- **v1.22.8 の第 1 フレーム JPEG フォールバックを撤去**：分割送信でフルフレームが扱えるようになったため、`handle_read_file_base64` の GIF パスは `{useChunks:true, totalSize, mime, sourcePath}` を返す信号のみに簡素化した。
+
+### Added
+- **新規拡張ページ `src/viewer/viewer.html` / `viewer.js`**：`?path=...` クエリで指定されたローカルファイルを `FETCH_FILE_AS_DATAURL` 経由で読み込み、`dataUrl` 応答は `<img src>` へ直接、`chunksB64` 応答は `URL.createObjectURL` で Blob URL 化して表示する。ページ破棄時に `beforeunload` で Blob URL を解放。`manifest.json:web_accessible_resources` に両ファイルを追加。
+- **background.js 汎用ヘルパー**：`readNativeFileChunksB64(path)`（256 イテレーション安全上限付きでチャンク収集）／`deleteNativeChunkFile(path)`（cleanup）／`_assembleBlobFromChunksB64(chunksB64, mime)`。`LONG_TIMEOUT_CMDS` に `READ_FILE_CHUNK` / `MAKE_GIF_THUMB_FILE` / `FETCH_PREVIEW_GIF` を追加。
+
+### Changed
+- **native/image_saver.py**: version 1.9.6 → 1.9.7
+
+---
+
 ## [1.22.8] - 2026-04-17
 
 ### Fixed

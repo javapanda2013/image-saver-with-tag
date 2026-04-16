@@ -224,12 +224,27 @@ browser.runtime.onMessage.addListener(async (message) => {
         cmd:  "LIST_SUBFOLDERS",
         path: message.path || "",
       });
-    case "READ_LOCAL_IMAGE_BASE64":
+    case "READ_LOCAL_IMAGE_BASE64": {
+      // v1.22.9: .gif ファイルはアニメーションを保持するため
+      //          READ_FILE_CHUNK で元ファイルを分割読み取りし、chunksB64 で返す。
+      const _p = (message.path || "");
+      if (_p.toLowerCase().endsWith(".gif")) {
+        const chunkRes = await readNativeFileChunksB64(_p);
+        if (!chunkRes.ok) return { ok: false, error: chunkRes.error };
+        return {
+          ok:        true,
+          chunksB64: chunkRes.chunksB64,
+          mime:      "image/gif",
+          totalSize: chunkRes.totalSize,
+          resized:   false,
+        };
+      }
       return sendNative({
         cmd:     "READ_LOCAL_IMAGE_BASE64",
         path:    message.path    || "",
         maxSize: message.maxSize || 1200,
       });
+    }
     case "GET_STORAGE_SIZE":
       return getStorageSize();
     // ---- エクスプローラーで開く ----
@@ -326,6 +341,8 @@ function sendNative(payload) {
       "WRITE_FILE", "SAVE_IMAGE_BASE64", "READ_LOCAL_IMAGE_BASE64",
       "SCAN_EXTERNAL_IMAGES", "GENERATE_THUMBS_BATCH", "LIST_SUBFOLDERS",
       "SAVE_IMAGE", "FETCH_PREVIEW", "READ_FILE_BASE64",
+      // v1.22.9: 大容量 GIF 分割読み込み関連
+      "READ_FILE_CHUNK", "MAKE_GIF_THUMB_FILE", "FETCH_PREVIEW_GIF",
     ];
     const timeoutMs = LONG_TIMEOUT_CMDS.includes(payload.cmd) ? 300000 : 10000;
 
@@ -1011,15 +1028,86 @@ async function openFile(path) {
 /**
  * ローカルファイルをNative経由でBase64 data URLとして取得する。
  * 設定画面・保存ウィンドウの「保存した画像を開く」で別タブ表示に使用。
+ *
+ * v1.22.9: 大容量 GIF（Native Messaging 1MB 上限を超えるもの）は、Python 側が
+ *   {ok:true, useChunks:true, totalSize, mime, sourcePath} を返す。
+ *   ここで READ_FILE_CHUNK を使って分割取得し、呼び出し側へ chunksB64 配列を返す。
+ *   呼び出し側（settings.js / modal.js / viewer.js）は Blob URL を組み立てて再生する。
  */
 async function fetchFileAsDataUrl(path) {
   try {
     const res = await sendNative({ cmd: "READ_FILE_BASE64", path });
     if (res?.ok && res.dataUrl) return { ok: true, dataUrl: res.dataUrl };
+    if (res?.ok && res.useChunks) {
+      const chunkRes = await readNativeFileChunksB64(path);
+      if (!chunkRes.ok) return { ok: false, error: chunkRes.error };
+      return {
+        ok:        true,
+        chunksB64: chunkRes.chunksB64,
+        mime:      res.mime || "image/gif",
+        totalSize: chunkRes.totalSize,
+      };
+    }
     return { ok: false, error: res?.error || "取得失敗" };
   } catch (err) {
     return { ok: false, error: err.message };
   }
+}
+
+// ----------------------------------------------------------------
+// v1.22.9: 分割ファイル読み込み（Native Messaging 1MB 上限の回避）
+// Python の READ_FILE_CHUNK を繰り返し呼び、chunksB64 配列で返す。
+// ----------------------------------------------------------------
+async function readNativeFileChunksB64(path) {
+  try {
+    const chunks = [];
+    let offset = 0;
+    let totalSize = 0;
+    // 保険: 無限ループを防ぐため十分大きな安全上限（100 チャンク × 800KB = 80MB 程度までを想定）
+    for (let i = 0; i < 256; i++) {
+      const res = await sendNative({
+        cmd:      "READ_FILE_CHUNK",
+        path,
+        offset,
+        maxBytes: 700 * 1024,
+      });
+      if (!res?.ok) {
+        return { ok: false, error: res?.error || "READ_FILE_CHUNK 失敗" };
+      }
+      totalSize = res.totalSize || totalSize;
+      if (res.length > 0 && res.bytes) {
+        chunks.push(res.bytes);
+      }
+      if (res.done) break;
+      offset = (res.offset || offset) + (res.length || 0);
+      if (offset >= totalSize && totalSize > 0) break;
+    }
+    return { ok: true, chunksB64: chunks, totalSize };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * 一時ファイル（Python 側 _CHUNK_TEMP_DIR 配下）を削除する。fire-and-forget で使用。
+ */
+async function deleteNativeChunkFile(path) {
+  try { await sendNative({ cmd: "DELETE_CHUNK_FILE", path }); } catch (_) { /* 無視 */ }
+}
+
+/**
+ * background 内で chunksB64 配列を Blob にまとめるヘルパー。
+ * generateMissingThumbs の GIF サムネイル生成経路で使用。
+ */
+function _assembleBlobFromChunksB64(chunksB64, mime) {
+  const arrays = [];
+  for (const b64 of chunksB64) {
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    arrays.push(arr);
+  }
+  return new Blob(arrays, { type: mime || "application/octet-stream" });
 }
 
 // ----------------------------------------------------------------
@@ -1209,19 +1297,43 @@ async function generateMissingThumbs(targetIds = null, overwrite = false) {
         entry.thumbId = null;
       }
 
-      // Python 経由でローカルファイルを Base64 取得（Pillow でリサイズ済み）
+      // v1.22.9: GIF はアニメーションを保持したまま分割取得する別経路を使う。
+      //   1. Python 側 MAKE_GIF_THUMB_FILE で縮小 GIF を一時ファイルへ書き出す
+      //   2. READ_FILE_CHUNK で分割読み取りして Blob を組み立てる（全フレーム保持）
+      //   3. そのまま IDB へ保存（Canvas 再リサイズは GIF アニメを破壊するためスキップ）
+      const isGif = filePath.toLowerCase().endsWith(".gif");
+      if (isGif) {
+        const thumbRes = await sendNative({ cmd: "MAKE_GIF_THUMB_FILE", path: filePath, maxSize: 600 });
+        if (!thumbRes?.ok || !thumbRes.tempPath) {
+          failed++;
+          addLog("WARN", `GIF サムネイル生成失敗: ${entry.filename}`, `path=${filePath} error=${thumbRes?.error || "unknown"}`);
+          continue;
+        }
+        const chunkRes = await readNativeFileChunksB64(thumbRes.tempPath);
+        // 一時ファイルのクリーンアップ（失敗しても継続）
+        deleteNativeChunkFile(thumbRes.tempPath);
+        if (!chunkRes.ok) {
+          failed++;
+          addLog("WARN", `GIF サムネイル取得失敗: ${entry.filename}`, `tempPath=${thumbRes.tempPath} error=${chunkRes.error}`);
+          continue;
+        }
+        const gifBlob = _assembleBlobFromChunksB64(chunkRes.chunksB64, thumbRes.mime || "image/gif");
+        const thumbId = await saveThumbToIDB(gifBlob);
+        entry.thumbId     = thumbId;
+        entry.thumbWidth  = thumbRes.width  || null;
+        entry.thumbHeight = thumbRes.height || null;
+        generated++;
+        changed = true;
+        addLog("INFO", `GIF サムネイル生成: ${entry.filename}`, `size=${gifBlob.size} ${thumbRes.width || "?"}x${thumbRes.height || "?"}`);
+        continue;
+      }
+
+      // 通常画像（非 GIF）: 従来どおり READ_FILE_BASE64 で Base64 取得
       const res = await sendNative({ cmd: "READ_FILE_BASE64", path: filePath });
       if (!res?.ok || !res.dataUrl) {
         failed++;
-        // 診断情報をログに出力（GIF 失敗原因の特定用）
-        const diagStr = res?.diagnostic ? JSON.stringify(res.diagnostic) : "(no diagnostic)";
-        addLog("WARN", `サムネイル生成失敗: ${entry.filename}`, `path=${filePath} error=${res?.error || "unknown"} diagnostic=${diagStr}`);
+        addLog("WARN", `サムネイル生成失敗: ${entry.filename}`, `path=${filePath} error=${res?.error || "unknown"}`);
         continue;
-      }
-      // v1.22.8: Python 側が第1フレーム JPEG フォールバックを適用した場合は INFO ログに明記
-      if (res.fallback) {
-        const diagStr = res.diagnostic ? JSON.stringify(res.diagnostic) : "";
-        addLog("INFO", `サムネイル GIF フォールバック適用: ${entry.filename}`, `fallback=${res.fallback} ${diagStr}`);
       }
 
       // Base64 → Blob → IDB 保存
@@ -1517,9 +1629,27 @@ function normalizePath(p) {
 /**
  * Python経由でプレビュー画像を取得してdata URLで返す。
  * background XHRが403になるサイト（pixiv等）向けのフォールバック。
+ *
+ * v1.22.9: .gif URL は FETCH_PREVIEW_GIF で一時ファイルへ保存 → 分割読み取りして
+ *   アニメーションを保持したまま chunksB64 で返す。呼び出し側が Blob URL を組み立てる。
  */
 async function fetchPreviewViaNative(url) {
   try {
+    const isGif = /\.gif(\?|#|$)/i.test(url || "");
+    if (isGif) {
+      const gifRes = await sendNative({ cmd: "FETCH_PREVIEW_GIF", url });
+      if (!gifRes?.ok) return { dataUrl: null, error: gifRes?.error };
+      const chunkRes = await readNativeFileChunksB64(gifRes.tempPath);
+      deleteNativeChunkFile(gifRes.tempPath); // 非同期クリーンアップ
+      if (!chunkRes.ok) return { dataUrl: null, error: chunkRes.error };
+      return {
+        chunksB64: chunkRes.chunksB64,
+        mime:      gifRes.mime || "image/gif",
+        width:     gifRes.width  || null,
+        height:    gifRes.height || null,
+        totalSize: chunkRes.totalSize,
+      };
+    }
     const res = await sendNative({ cmd: "FETCH_PREVIEW", url });
     if (res?.ok && res.dataUrl) return { dataUrl: res.dataUrl };
     return { dataUrl: null, error: res?.error };

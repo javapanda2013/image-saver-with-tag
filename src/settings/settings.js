@@ -3541,19 +3541,10 @@ function _buildHistCardInner(card, entry, onThumbClick) {
     e.stopPropagation();
     if (!primary || !entry.filename) { showStatus("⚠️ 保存先情報が取得できません", true); return; }
     const filePath = primary.replace(/[\\/]+$/, "") + "\\" + entry.filename;
-    const res = await browser.runtime.sendMessage({ type: "FETCH_FILE_AS_DATAURL", path: filePath });
-    if (res?.ok && res.dataUrl) {
-      const win = window.open();
-      if (win) {
-        win.document.body.style.cssText = "margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh;";
-        const img = win.document.createElement("img");
-        img.src = res.dataUrl;
-        img.style.cssText = "max-width:100%;max-height:100vh;object-fit:contain;";
-        win.document.body.appendChild(img);
-      }
-    } else {
-      showStatus(`⚠️ ファイルを開けませんでした: ${res?.error || filePath}`, true);
-    }
+    // v1.22.9: 拡張ページ viewer.html を開き、大容量 GIF も含めてそこで描画する。
+    //   viewer.js 側で FETCH_FILE_AS_DATAURL を叩いて dataUrl / chunksB64 を処理する。
+    const viewerUrl = browser.runtime.getURL("src/viewer/viewer.html") + "?path=" + encodeURIComponent(filePath);
+    window.open(viewerUrl, "_blank");
   });
 
   card.querySelector(".hist-card-btn.del").addEventListener("click", async (e) => {
@@ -5983,6 +5974,33 @@ async function _extB1LoadCurrent() {
     if (res?.ok && res.dataUrl) {
       if (imgEl) imgEl.src = res.dataUrl;
       if (infoEl) infoEl.textContent = `${res.width}×${res.height}` + (res.resized ? "（縮小表示）" : "");
+    } else if (res?.ok && Array.isArray(res.chunksB64)) {
+      // v1.22.9: GIF は base64 チャンクで返るので Blob URL に組み立てる
+      try {
+        const arrays = [];
+        for (const b64 of res.chunksB64) {
+          const bin = atob(b64);
+          const arr = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          arrays.push(arr);
+        }
+        const blob = new Blob(arrays, { type: res.mime || "image/gif" });
+        if (imgEl) {
+          // 前の Blob URL があれば解放
+          if (imgEl.dataset.blobUrl) {
+            try { URL.revokeObjectURL(imgEl.dataset.blobUrl); } catch (_) {}
+          }
+          const blobUrl = URL.createObjectURL(blob);
+          imgEl.dataset.blobUrl = blobUrl;
+          imgEl.src = blobUrl;
+        }
+        if (infoEl) {
+          const wh = (res.width && res.height) ? `${res.width}×${res.height}` : "GIF";
+          infoEl.textContent = `${wh}（アニメーション）`;
+        }
+      } catch (err) {
+        if (infoEl) infoEl.textContent = `⚠ プレビュー組み立て失敗: ${err?.message || err}`;
+      }
     } else {
       if (infoEl) infoEl.textContent = `⚠ プレビュー取得失敗: ${res?.error || "unknown"}`;
     }
