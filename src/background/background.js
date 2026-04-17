@@ -269,21 +269,22 @@ browser.runtime.onMessage.addListener(async (message) => {
         maxSize: message.maxSize || 1200,
       });
     }
-    // v1.23.0: GROUP-1-b 外部取り込み時に指定保存先へローカルファイルをコピー（タグ・権利者を含むファイル名）
+    // v1.23.0: GROUP-1-b 外部取り込み時に指定保存先へローカルファイルをコピー
+    // v1.23.1: buildFilenameWithMeta 除去（saveHistory と整合）＋同一フォルダならスキップ
     case "COPY_LOCAL_FILE": {
-      // フロント → buildFilenameWithMeta 相当をここで適用する
-      const { srcPath, dstDir, filename, tags, subTags, authors } = message;
+      const { srcPath, dstDir, filename } = message;
       if (!srcPath || !dstDir || !filename) {
         return { ok: false, error: "COPY_LOCAL_FILE: srcPath/dstDir/filename は必須" };
       }
-      const { filenameIncludeTag, filenameIncludeSubtag, filenameIncludeAuthor } =
-        await browser.storage.local.get(["filenameIncludeTag", "filenameIncludeSubtag", "filenameIncludeAuthor"]);
-      const effectiveFilename = buildFilenameWithMeta(filename, tags || [], subTags || [], authors || [], {
-        filenameIncludeTag:    !!filenameIncludeTag,
-        filenameIncludeSubtag: !!filenameIncludeSubtag,
-        filenameIncludeAuthor: !!filenameIncludeAuthor,
-      });
-      const dstPath = `${normalizePath(dstDir)}\\${effectiveFilename}`;
+      // 同一フォルダ判定（大文字小文字を無視して正規化後比較）
+      const srcDir = srcPath.replace(/[\\/][^\\/]+$/, "");
+      const normSrcDir = normalizePath(srcDir).toLowerCase();
+      const normDstDir = normalizePath(dstDir).toLowerCase();
+      if (normSrcDir === normDstDir) {
+        addLog("INFO", `外部取り込みコピー: 同一フォルダのためスキップ: ${srcPath}`);
+        return { ok: true, skipped: true };
+      }
+      const dstPath = `${normalizePath(dstDir)}\\${filename}`;
       addLog("INFO", `外部取り込みコピー: ${srcPath}`, `→ ${dstPath}`);
       return sendNative({ cmd: "COPY_FILE", srcPath, dstPath });
     }

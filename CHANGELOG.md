@@ -5,6 +5,24 @@
 
 ---
 
+## [1.23.1] - 2026-04-18
+
+### Fixed
+- **外部取り込み「1 枚ずつ形式」のコピー作成でファイル名不整合を解消**（GROUP-5 ホットフィックス）
+  - v1.23.0 では `COPY_LOCAL_FILE` ハンドラが独自に `buildFilenameWithMeta` を適用してタグ・権利者付き別名でコピーしていた一方、`saveHistory` 側は `filename = cur.fileName`（原名）で書き込む設計になっており、`filenameIncludeTag` / `filenameIncludeSubtag` / `filenameIncludeAuthor` のいずれかが ON の場合に **saveHistory が存在しないファイルを指す** 状態になっていた。
+  - `src/background/background.js` の `COPY_LOCAL_FILE` ハンドラから `buildFilenameWithMeta` 呼び出しを除去し、呼び出し元から渡された `filename`（= `cur.fileName`）をそのまま使用して saveHistory と整合させた。
+- **同一フォルダ指定時の余分な複製を防止**
+  - UI の保存先がスキャン元と同じフォルダの場合、コピー作成トグル ON では従来 `unique_path()` により `_2` 連番付きの重複ファイルが生成されていた。`normalizePath` ＋ `toLowerCase()` で同一判定し、同一なら `COPY_FILE` を送信せず `{ ok: true, skipped: true }` を返却。ログに `同一フォルダのためスキップ` を INFO で記録。
+
+### Known Limitations
+- 「ファイルへのタグ・権利者付与」（`filenameIncludeTag/Subtag/Author` を実ファイル名に反映）は本パッチでは未対応。v1.23.1 は saveHistory と実ファイルの整合回復のみを目的とする。該当機能は GROUP-5-A として別リリース（v1.24.0 候補）で RENAME_FILE 追加と合わせて検討する。
+
+### Changed
+- manifest.json: 1.23.0 → 1.23.1
+- **native/image_saver.py は変更なし**（version 1.9.9 据え置き）
+
+---
+
 ## [1.23.0] - 2026-04-18
 
 ### Added
