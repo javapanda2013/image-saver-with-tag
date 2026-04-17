@@ -4844,27 +4844,9 @@ async function _setupExtPerItemMode() {
     toggle.appendChild(cntSpan);
   });
 
-  // v1.23.0: GROUP-1-a2 引き継ぎ設定チェックボックス
-  const _wireCarry = (id, key) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.checked = !!_extCarryover[key];
-    el.addEventListener("change", async () => {
-      _extCarryover[key] = el.checked;
-      await browser.storage.local.set({ extImportCarryover: _extCarryover });
-      // 引き継ぎ OFF にしたら蓄積値も破棄（意図しない残留を防ぐ）
-      if (!el.checked) {
-        if (key === "tags")     _extB1LastCarryValues.tags     = [];
-        if (key === "subtags")  _extB1LastCarryValues.subtags  = [];
-        if (key === "authors")  _extB1LastCarryValues.authors  = [];
-        if (key === "savepath") _extB1LastCarryValues.savepath = "";
-      }
-    });
-  };
-  _wireCarry("ext-carry-tags",     "tags");
-  _wireCarry("ext-carry-subtags",  "subtags");
-  _wireCarry("ext-carry-authors",  "authors");
-  _wireCarry("ext-carry-savepath", "savepath");
+  // v1.23.4: GROUP-11-carryover-move
+  // 引き継ぎチェックの UI は 1枚ずつ取り込みモーダル内の各項目ラベル横へ移設済み。
+  // イベント配線は _extB1SetupEvents() 内の _wireCarry で行う。
 
   // b1 オーバーレイのイベント設定
   _extB1SetupEvents();
@@ -4879,19 +4861,16 @@ function _applyExtModeUI() {
   const batchEl = document.getElementById("ext-batch-mode");
   const perEl   = document.getElementById("ext-per-item-mode");
   const hintEl  = document.getElementById("ext-mode-hint");
-  // v1.23.0: GROUP-1-a2 引き継ぎ設定ボックスの表示切替
-  const carryBox = document.getElementById("ext-peritem-carryover-box");
+  // v1.23.4: 引き継ぎ設定ボックスはモーダル内へ移設したため、ここでの表示切替は不要
   if (!batchEl || !perEl) return;
   if (_extMode === "per_item") {
     batchEl.style.display = "none";
     perEl.style.display   = "";
     if (hintEl) hintEl.textContent = "1枚ずつプレビュー表示しながら取り込みます。中断・再開、複数セッション並行可。";
-    if (carryBox) carryBox.style.display = "";
   } else {
     batchEl.style.display = "";
     perEl.style.display   = "none";
     if (hintEl) hintEl.textContent = "従来の一括取り込み形式です。";
-    if (carryBox) carryBox.style.display = "none";
   }
 }
 
@@ -5820,6 +5799,29 @@ function _extB1SetupEvents() {
     });
   }
 
+  // v1.23.4: GROUP-11-carryover-move 引き継ぎチェック（モーダル内・各項目ラベル横）
+  // 設定画面側の一括ボックスは廃止し、各項目の入力欄直上にチェックを配置。
+  // ストレージキー extImportCarryover は据え置き（挙動・互換性維持）。
+  const _wireB1Carry = (id, key) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", async () => {
+      _extCarryover[key] = !!el.checked;
+      await browser.storage.local.set({ extImportCarryover: _extCarryover });
+      // 引き継ぎ OFF にしたら蓄積値も破棄（意図しない残留を防ぐ）
+      if (!el.checked) {
+        if (key === "tags")     _extB1LastCarryValues.tags     = [];
+        if (key === "subtags")  _extB1LastCarryValues.subtags  = [];
+        if (key === "authors")  _extB1LastCarryValues.authors  = [];
+        if (key === "savepath") _extB1LastCarryValues.savepath = "";
+      }
+    });
+  };
+  _wireB1Carry("ext-b1-carry-tags",     "tags");
+  _wireB1Carry("ext-b1-carry-subtags",  "subtags");
+  _wireB1Carry("ext-b1-carry-authors",  "authors");
+  _wireB1Carry("ext-b1-carry-savepath", "savepath");
+
   // チップ入力（タグ・サブタグ・権利者）
   _extB1SetupChipInput("tag");
   _extB1SetupChipInput("subtag");
@@ -6020,6 +6022,12 @@ async function _extOpenB1(session) {
   // GROUP-1-b コピートグルを反映
   const copyEl = document.getElementById("ext-b1-copy-file");
   if (copyEl) copyEl.checked = !!_extB1CopyToDest;
+  // v1.23.4: GROUP-11-carryover-move 引き継ぎチェック状態をモーダル内 UI に反映
+  const _cb = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+  _cb("ext-b1-carry-tags",     _extCarryover.tags);
+  _cb("ext-b1-carry-subtags",  _extCarryover.subtags);
+  _cb("ext-b1-carry-authors",  _extCarryover.authors);
+  _cb("ext-b1-carry-savepath", _extCarryover.savepath);
   document.getElementById("ext-b1-overlay").style.display = "flex";
   document.getElementById("ext-b1-session-name").textContent = session.name || session.rootPath;
   await _extB1LoadCurrent();

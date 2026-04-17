@@ -1246,21 +1246,8 @@
       <span id="ext-mode-hint" style="font-size:11px;color:#666;margin-left:auto;"></span>
     </div>
 
-    <!-- v1.23.0: GROUP-1-a2 1枚ずつ取り込みの項目別引き継ぎ設定 -->
-    <div id="ext-peritem-carryover-box" style="display:none;padding:8px 12px;background:#fef9ef;border:1px solid #f2d68b;border-radius:6px;margin:0 0 12px;">
-      <div style="font-size:12px;font-weight:600;color:#7a5a00;margin-bottom:6px;">
-        🔁 1枚ずつ形式の引き継ぎ設定
-        <span style="font-size:11px;color:#8a6a00;font-weight:400;margin-left:6px;">
-          （「保存して次へ」で次画像に引き継ぐ項目を選択）
-        </span>
-      </div>
-      <div style="display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:#2c3e50;">
-        <label style="cursor:pointer;"><input type="checkbox" id="ext-carry-tags" /> メインタグ</label>
-        <label style="cursor:pointer;"><input type="checkbox" id="ext-carry-subtags" /> サブタグ</label>
-        <label style="cursor:pointer;"><input type="checkbox" id="ext-carry-authors" /> 権利者</label>
-        <label style="cursor:pointer;"><input type="checkbox" id="ext-carry-savepath" /> 保存先フォルダパス</label>
-      </div>
-    </div>
+    <!-- v1.23.4: GROUP-11-carryover-move により既存「1枚ずつ形式の引き継ぎ設定」セクションは削除。
+         チェックボックスは 1枚ずつ取り込みモーダル（ext-b1-overlay）の各項目ラベル横へ移設。 -->
 
     <!-- ────────── 一括形式（従来） ────────── -->
     <div id="ext-batch-mode">
@@ -1499,7 +1486,12 @@
             <div style="font-size:11px;color:#555;margin-bottom:2px;">更新日時</div>
             <div id="ext-b1-mtime" style="font-size:12px;color:#2c3e50;margin-bottom:10px;"></div>
 
-            <div style="font-size:12px;color:#555;margin-bottom:4px;font-weight:600;">保存先</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span style="font-size:12px;color:#555;font-weight:600;">保存先</span>
+              <label style="font-size:11px;color:#555;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:3px;">
+                <input type="checkbox" id="ext-b1-carry-savepath" /> 入力した情報を次の編集でも使用する
+              </label>
+            </div>
             <div style="display:flex;gap:6px;margin-bottom:4px;">
               <input type="text" id="ext-b1-savepath" style="flex:1;font-size:12px;padding:4px 8px;border:1px solid #d0d0d0;border-radius:4px;font-family:inherit;" />
               <button id="ext-b1-pick-folder" class="backup-btn" style="padding:3px 10px;font-size:12px;">📁 選ぶ</button>
@@ -1511,7 +1503,12 @@
               保存先に画像をコピー作成（ファイル名＝タグ・権利者含む通常保存と同形式）
             </label>
 
-            <div style="font-size:12px;color:#555;margin-bottom:4px;font-weight:600;">メインタグ</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span style="font-size:12px;color:#555;font-weight:600;">メインタグ</span>
+              <label style="font-size:11px;color:#555;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:3px;">
+                <input type="checkbox" id="ext-b1-carry-tags" /> 入力した情報を次の編集でも使用する
+              </label>
+            </div>
             <div id="ext-b1-tag-chips" style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px;min-height:22px;"></div>
             <div style="display:flex;gap:6px;margin-bottom:10px;position:relative;">
               <input type="text" id="ext-b1-tag-input" placeholder="メインタグを追加（Enter）" autocomplete="off"
@@ -1519,7 +1516,12 @@
               <div id="ext-b1-tag-sugg" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #d0d8f0;border-radius:5px;box-shadow:0 4px 12px rgba(0,0,0,.15);max-height:120px;overflow-y:auto;z-index:5;font-size:12px;"></div>
             </div>
 
-            <div style="font-size:12px;color:#555;margin-bottom:4px;font-weight:600;">サブタグ</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span style="font-size:12px;color:#555;font-weight:600;">サブタグ</span>
+              <label style="font-size:11px;color:#555;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:3px;">
+                <input type="checkbox" id="ext-b1-carry-subtags" /> 入力した情報を次の編集でも使用する
+              </label>
+            </div>
             <div id="ext-b1-subtag-chips" style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px;min-height:22px;"></div>
             <div style="display:flex;gap:6px;margin-bottom:10px;position:relative;">
               <input type="text" id="ext-b1-subtag-input" placeholder="サブタグを追加（Enter）" autocomplete="off"
@@ -1527,7 +1529,12 @@
               <div id="ext-b1-subtag-sugg" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #d0d8f0;border-radius:5px;box-shadow:0 4px 12px rgba(0,0,0,.15);max-height:120px;overflow-y:auto;z-index:5;font-size:12px;"></div>
             </div>
 
-            <div style="font-size:12px;color:#555;margin-bottom:4px;font-weight:600;">権利者</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <span style="font-size:12px;color:#555;font-weight:600;">権利者</span>
+              <label style="font-size:11px;color:#555;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:3px;">
+                <input type="checkbox" id="ext-b1-carry-authors" /> 入力した情報を次の編集でも使用する
+              </label>
+            </div>
             <div id="ext-b1-author-chips" style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px;min-height:22px;"></div>
             <div style="display:flex;gap:6px;margin-bottom:10px;position:relative;">
               <input type="text" id="ext-b1-author-input" placeholder="権利者を追加（Enter）" autocomplete="off"
