@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 image_saver.py  —  Firefox Native Messaging ホスト
-version: 1.9.7
+version: 1.9.8
 
 受け取るコマンド:
   {"cmd": "LIST_DIR",      "path": null}
@@ -231,18 +231,22 @@ def handle_save_image(url, save_path):
         # 元画像をそのまま Base64 化すると Native Messaging の 4MB 上限を超えるため必ずリサイズする
         try:
             # GIF はアニメーション情報を維持するため専用ヘルパーで処理する
+            # v1.9.8: Native Messaging 1MB 応答上限対策として一時ファイル経由へ統一
             if save_path.lower().endswith(".gif"):
                 gif_bytes, thumb_w, thumb_h = make_gif_thumbnail(data, max_size=600)
                 if gif_bytes is not None:
-                    thumb_b64 = base64.b64encode(gif_bytes).decode("ascii")
-                    return {
-                        "ok": True,
-                        "savedPath": final_path,
-                        "thumbData": thumb_b64,
-                        "thumbMime": "image/gif",
-                        "thumbWidth": thumb_w,
-                        "thumbHeight": thumb_h,
-                    }
+                    tmp_path, tmp_size = _write_gif_thumb_to_temp(gif_bytes)
+                    if tmp_path:
+                        return {
+                            "ok": True,
+                            "savedPath": final_path,
+                            "thumbChunkPath": tmp_path,
+                            "thumbTotalSize": tmp_size,
+                            "thumbMime": "image/gif",
+                            "thumbWidth": thumb_w,
+                            "thumbHeight": thumb_h,
+                        }
+                    return {"ok": True, "savedPath": final_path, "thumbError": "GIF thumbnail temp write failed"}
                 # GIF サムネイル生成失敗時はサムネイルなしで保存成功を返す
                 return {"ok": True, "savedPath": final_path, "thumbError": "GIF thumbnail failed"}
 
@@ -312,18 +316,22 @@ def handle_save_image_base64(data_url, save_path):
     # サムネイル生成（handle_save_image と同じロジック）
     try:
         # GIF はアニメーション情報を維持するため専用ヘルパーで処理する
+        # v1.9.8: Native Messaging 1MB 応答上限対策として一時ファイル経由へ統一
         if save_path.lower().endswith(".gif"):
             gif_bytes, thumb_w, thumb_h = make_gif_thumbnail(data, max_size=600)
             if gif_bytes is not None:
-                thumb_b64 = base64.b64encode(gif_bytes).decode("ascii")
-                return {
-                    "ok": True,
-                    "savedPath": final_path,
-                    "thumbData": thumb_b64,
-                    "thumbMime": "image/gif",
-                    "thumbWidth": thumb_w,
-                    "thumbHeight": thumb_h,
-                }
+                tmp_path, tmp_size = _write_gif_thumb_to_temp(gif_bytes)
+                if tmp_path:
+                    return {
+                        "ok": True,
+                        "savedPath": final_path,
+                        "thumbChunkPath": tmp_path,
+                        "thumbTotalSize": tmp_size,
+                        "thumbMime": "image/gif",
+                        "thumbWidth": thumb_w,
+                        "thumbHeight": thumb_h,
+                    }
+                return {"ok": True, "savedPath": final_path, "thumbError": "GIF thumbnail temp write failed"}
             return {"ok": True, "savedPath": final_path, "thumbError": "GIF thumbnail failed"}
 
         from PIL import Image
@@ -633,6 +641,24 @@ def _get_chunk_temp_dir():
         d = tempfile.gettempdir()
     _CHUNK_TEMP_DIR = d
     return d
+
+
+def _write_gif_thumb_to_temp(gif_bytes):
+    """
+    v1.9.8: 保存系ハンドラ（SAVE_IMAGE / SAVE_IMAGE_BASE64 / GENERATE_THUMBS_BATCH）で
+    GIF サムネイル Base64 を直接返していたが、Native Messaging の 1MB 応答上限を超える
+    ケースが発生するため一時ファイル経由へ統一する。
+    バイト列を %TEMP%\\borgestag_chunk_cache\\ に一意名で書き出し、(temp_path, size) を返す。
+    失敗時は (None, None)。
+    """
+    try:
+        temp_dir = _get_chunk_temp_dir()
+        fd, temp_path = tempfile.mkstemp(suffix=".gif", prefix="savedgif_", dir=temp_dir)
+        with os.fdopen(fd, "wb") as tf:
+            tf.write(gif_bytes)
+        return temp_path, len(gif_bytes)
+    except Exception:
+        return None, None
 
 
 def _is_under_chunk_temp_dir(path):
@@ -1105,6 +1131,9 @@ def handle_generate_thumbs_batch(paths):
     import io as _io
     thumbs = {}
     thumbMimes = {}  # パスごとの MIME type（デフォルト image/jpeg）
+    # v1.9.8: GIF は Native Messaging 1MB 応答上限対策として一時ファイル経由へ統一
+    # JS 側は thumbChunkPaths[p] が存在するとき READ_FILE_CHUNK で組み立てる
+    thumbChunkPaths = {}
     errors = {}
     for p in paths:
         try:
@@ -1115,8 +1144,12 @@ def handle_generate_thumbs_batch(paths):
             if p.lower().endswith(".gif"):
                 gif_bytes, _, _ = make_gif_thumbnail(data, max_size=600)
                 if gif_bytes is not None:
-                    thumbs[p] = base64.b64encode(gif_bytes).decode("ascii")
-                    thumbMimes[p] = "image/gif"
+                    tmp_path, tmp_size = _write_gif_thumb_to_temp(gif_bytes)
+                    if tmp_path:
+                        thumbChunkPaths[p] = {"tempPath": tmp_path, "totalSize": tmp_size}
+                        thumbMimes[p] = "image/gif"
+                    else:
+                        errors[p] = "GIF thumbnail temp write failed"
                 else:
                     errors[p] = "GIF thumbnail failed"
                 continue
@@ -1136,7 +1169,13 @@ def handle_generate_thumbs_batch(paths):
             thumbs[p] = base64.b64encode(buf.getvalue()).decode("ascii")
         except Exception as e:
             errors[p] = str(e)
-    return {"ok": True, "thumbs": thumbs, "thumbMimes": thumbMimes, "errors": errors}
+    return {
+        "ok": True,
+        "thumbs": thumbs,
+        "thumbMimes": thumbMimes,
+        "thumbChunkPaths": thumbChunkPaths,
+        "errors": errors,
+    }
 
 
 # ---------------------------------------------------------------

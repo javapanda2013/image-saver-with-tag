@@ -214,11 +214,35 @@ browser.runtime.onMessage.addListener(async (message) => {
         excludes:   message.excludes   || [],
         extensions: message.extensions || [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"],
       });
-    case "GENERATE_THUMBS_BATCH":
-      return sendNative({
+    case "GENERATE_THUMBS_BATCH": {
+      // v1.22.10: Python 側は GIF について thumbChunkPaths[p]={tempPath,totalSize} を返す
+      //   （SAVE_IMAGE 系の 1MB 応答上限と同根の対策）。ここで分割読み取り→Base64 化し、
+      //   呼び出し側（settings.js の外部取り込み 2 箇所）の既存コード（thumbs[p] + thumbMimes[p]）に
+      //   変更を要さない形で統合する。
+      const batchRes = await sendNative({
         cmd:   "GENERATE_THUMBS_BATCH",
         paths: message.paths || [],
       });
+      if (batchRes?.ok && batchRes.thumbChunkPaths) {
+        batchRes.thumbs      = batchRes.thumbs      || {};
+        batchRes.thumbMimes  = batchRes.thumbMimes  || {};
+        batchRes.errors      = batchRes.errors      || {};
+        for (const [p, info] of Object.entries(batchRes.thumbChunkPaths)) {
+          const tempPath = info?.tempPath;
+          if (!tempPath) continue;
+          const r = await _fetchThumbB64FromChunkPath(tempPath);
+          if (r.ok) {
+            batchRes.thumbs[p]     = r.b64;
+            batchRes.thumbMimes[p] = "image/gif";
+          } else {
+            batchRes.errors[p] = `GIF チャンク取得失敗: ${r.error}`;
+          }
+        }
+        // 呼び出し側は thumbChunkPaths を参照しない前提だが念のため削除
+        delete batchRes.thumbChunkPaths;
+      }
+      return batchRes;
+    }
     case "LIST_SUBFOLDERS":
       return sendNative({
         cmd:  "LIST_SUBFOLDERS",
@@ -494,11 +518,12 @@ async function handleSave(payload) {
     if (res.thumbError) {
       addLog("WARN", "サムネイル生成失敗 (Pillow未インストールの可能性)", res.thumbError);
     }
-    const mime = res.thumbMime || "image/jpeg";
-    const effectiveThumbDataUrl = thumbDataUrl
-      || (res.thumbData ? `data:${mime};base64,${res.thumbData}` : null);
-    const effectiveThumbW = thumbDataUrl ? thumbWidth  : (res.thumbWidth  || null);
-    const effectiveThumbH = thumbDataUrl ? thumbHeight : (res.thumbHeight || null);
+    // v1.22.10: Python が thumbData（非 GIF）と thumbChunkPath（大容量 GIF）を出し分けるため
+    //           共通ヘルパーで統合する。content 由来の thumbDataUrl は最優先を維持。
+    const pyThumb = await resolveThumbDataUrlFromNativeRes(res);
+    const effectiveThumbDataUrl = thumbDataUrl || (pyThumb ? pyThumb.dataUrl : null);
+    const effectiveThumbW = thumbDataUrl ? thumbWidth  : (pyThumb?.width  || null);
+    const effectiveThumbH = thumbDataUrl ? thumbHeight : (pyThumb?.height || null);
 
     await addSaveHistory({
       imageUrl, filename: effectiveFilename, savePath, tags: allTags, authors: resolvedAuthors, pageUrl,
@@ -782,10 +807,11 @@ async function handleInstantSave(imageUrl, pageUrl) {
     if (res.thumbError) {
       addLog("WARN", "即保存: サムネイル生成失敗 (Pillow未インストールの可能性)", res.thumbError);
     }
-    const mime = res.thumbMime || "image/jpeg";
-    const thumbDataUrl = res.thumbData ? `data:${mime};base64,${res.thumbData}` : null;
-    const thumbWidth   = res.thumbWidth  || null;
-    const thumbHeight  = res.thumbHeight || null;
+    // v1.22.10: thumbData / thumbChunkPath を共通ヘルパーで統合（即保存は content 由来サムネなし）
+    const pyThumb = await resolveThumbDataUrlFromNativeRes(res);
+    const thumbDataUrl = pyThumb?.dataUrl || null;
+    const thumbWidth   = pyThumb?.width   || null;
+    const thumbHeight  = pyThumb?.height  || null;
 
     // 履歴に追加
     await addSaveHistory({
@@ -1093,6 +1119,75 @@ async function readNativeFileChunksB64(path) {
  */
 async function deleteNativeChunkFile(path) {
   try { await sendNative({ cmd: "DELETE_CHUNK_FILE", path }); } catch (_) { /* 無視 */ }
+}
+
+/**
+ * v1.22.10: 一時ファイル（Python 側 _CHUNK_TEMP_DIR 配下）から Base64 文字列（prefix なし）を
+ * 組み立てて返す。読み取り後は一時ファイルを fire-and-forget で削除する。
+ *
+ * 各チャンクは Python 側で独立に base64.b64encode されているため、文字列結合ではバイト境界が
+ * 崩れる（chunk サイズが 3 の倍数でない場合）。そのため各チャンクをバイトに戻してから連結し、
+ * 全体を再 btoa する必要がある。
+ *
+ * 戻り値: {ok:true, b64} or {ok:false, error}
+ */
+async function _fetchThumbB64FromChunkPath(tempPath) {
+  try {
+    const chunkRes = await readNativeFileChunksB64(tempPath);
+    // 成否に関わらずクリーンアップを試みる
+    deleteNativeChunkFile(tempPath);
+    if (!chunkRes.ok) return { ok: false, error: chunkRes.error };
+    const blob = _assembleBlobFromChunksB64(chunkRes.chunksB64, "application/octet-stream");
+    const buf  = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binStr = "";
+    const STEP = 0x8000;
+    for (let i = 0; i < bytes.length; i += STEP) {
+      binStr += String.fromCharCode.apply(null, bytes.subarray(i, i + STEP));
+    }
+    return { ok: true, b64: btoa(binStr) };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * v1.22.10: Native からの保存系応答（thumbData / thumbChunkPath）を data URL に統一変換する。
+ *
+ * - thumbData 優先（従来互換の小サイズ経路、非 GIF 保存はこちら）
+ * - thumbChunkPath がある場合は一時ファイルを分割読み取りして Base64 data URL を組み立てる
+ *   （GIF 保存で Native Messaging 応答 1MB 上限を超えたときの経路）
+ *
+ * 戻り値: {dataUrl, width, height} または null（サムネイル情報なし／取得失敗）
+ */
+async function resolveThumbDataUrlFromNativeRes(res) {
+  try {
+    if (!res) return null;
+    const mime = res.thumbMime || "image/jpeg";
+    if (res.thumbData) {
+      return {
+        dataUrl: `data:${mime};base64,${res.thumbData}`,
+        width:   res.thumbWidth  || null,
+        height:  res.thumbHeight || null,
+      };
+    }
+    if (res.thumbChunkPath) {
+      const r = await _fetchThumbB64FromChunkPath(res.thumbChunkPath);
+      if (!r.ok) {
+        addLog("WARN", "GIF サムネイルチャンク取得失敗", r.error);
+        return null;
+      }
+      return {
+        dataUrl: `data:${mime};base64,${r.b64}`,
+        width:   res.thumbWidth  || null,
+        height:  res.thumbHeight || null,
+      };
+    }
+    return null;
+  } catch (err) {
+    addLog("WARN", "サムネイル URL 組立失敗", err?.message || String(err));
+    return null;
+  }
 }
 
 /**
@@ -1426,9 +1521,13 @@ async function handleSaveMulti(payload) {
       if (tags && tags.length > 0 && !skipTagRecord) {
         await recordTagDestination(tags, savePath);
       }
-      if (!pyThumbData && res.thumbData) {
-        const mime = res.thumbMime || "image/jpeg";
-        pyThumbData = { dataUrl: `data:${mime};base64,${res.thumbData}`, w: res.thumbWidth, h: res.thumbHeight };
+      // v1.22.10: ループ初回ぶんだけ Python サムネを採用する既存方針を維持。
+      //           GIF も thumbChunkPath 経由で取り込めるよう共通ヘルパーへ差し替え。
+      if (!pyThumbData) {
+        const pt = await resolveThumbDataUrlFromNativeRes(res);
+        if (pt) {
+          pyThumbData = { dataUrl: pt.dataUrl, w: pt.width, h: pt.height };
+        }
       }
       if (res.thumbError && !pyThumbData) {
         addLog("WARN", "サムネイル生成失敗 (Pillow未インストールの可能性)", res.thumbError);

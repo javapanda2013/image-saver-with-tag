@@ -5,6 +5,19 @@
 
 ---
 
+## [1.22.10] - 2026-04-17
+
+### Fixed
+- **保存系 GIF サムネイルでも Native Messaging 1MB 応答上限を回避する統一対応**：v1.22.9 で整備したチャンク経路をプレビュー／サムネイル生成／保存画像表示の 3 箇所に限定していたが、保存時の GIF サムネイルは依然として `thumbData`（Base64）を応答に直接詰め込んでおり、大容量 GIF（フレーム数・サイズが大きい場合）で Native Messaging の 1MB 応答上限に到達して保存成功レスポンスが返ってこなくなる残課題があった。以下 3 経路（および外部取り込み 2 経路）で一時ファイル＋`READ_FILE_CHUNK` 方式に統一：
+  - `handle_save_image` / `handle_save_image_base64` / `handle_generate_thumbs_batch` の GIF ブランチで、縮小 GIF を `%TEMP%\borgestag_chunk_cache\savedgif_xxxx.gif` に書き出し、応答は `thumbChunkPath` / `thumbTotalSize` / `thumbMime` / `thumbWidth` / `thumbHeight` を返す（`thumbData` は返さない）。非 GIF 保存は従来どおり `thumbData` 経路で影響なし。
+  - `background.js` に共通ヘルパー `resolveThumbDataUrlFromNativeRes(res)` と低レベル `_fetchThumbB64FromChunkPath(tempPath)` を新設。`handleSaveImage`（content 由来サムネ最優先を維持）／`handleInstantSave`／`handleSaveMulti`（ループ初回のみ採用する既存方針を維持）の 3 箇所で `res.thumbData → data:URL` 直組み立てを共通ヘルパーへ差し替え。
+  - `GENERATE_THUMBS_BATCH` メッセージハンドラで `thumbChunkPaths` を後処理し、settings.js 側（外部取り込みバルク／1 件ずつの 2 経路）は既存の `thumbs[p]` / `thumbMimes[p]` のまま無改修で動作する形に統合。
+
+### Changed
+- **native/image_saver.py**: version 1.9.7 → 1.9.8
+
+---
+
 ## [1.22.9] - 2026-04-17
 
 ### Changed
