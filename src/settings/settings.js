@@ -5934,15 +5934,20 @@ function _extB1SetupEvents() {
     document.getElementById("ext-b1-thumbs-modal").style.display = "none";
   });
   // v1.23.2: GROUP-7-a ページング前後ボタン
+  // v1.25.3: ユーザー要望でループ構造化（最終ページから「次」で先頭、先頭から「前」で最終ページへ）
   document.getElementById("ext-b1-thumbs-prev")?.addEventListener("click", () => {
     if (!_extActiveSession) return;
-    _extB1ThumbsPage--;
-    _extB1RenderThumbsPage(_extActiveSession, _extB1GetFilteredIndices(_extActiveSession));
+    const filtered = _extB1GetFilteredIndices(_extActiveSession);
+    const totalPages = Math.max(1, Math.ceil(filtered.length / _EXT_B1_THUMB_PAGE_SIZE));
+    _extB1ThumbsPage = (_extB1ThumbsPage - 1 + totalPages) % totalPages;
+    _extB1RenderThumbsPage(_extActiveSession, filtered);
   });
   document.getElementById("ext-b1-thumbs-next")?.addEventListener("click", () => {
     if (!_extActiveSession) return;
-    _extB1ThumbsPage++;
-    _extB1RenderThumbsPage(_extActiveSession, _extB1GetFilteredIndices(_extActiveSession));
+    const filtered = _extB1GetFilteredIndices(_extActiveSession);
+    const totalPages = Math.max(1, Math.ceil(filtered.length / _EXT_B1_THUMB_PAGE_SIZE));
+    _extB1ThumbsPage = (_extB1ThumbsPage + 1) % totalPages;
+    _extB1RenderThumbsPage(_extActiveSession, filtered);
   });
 
   // v1.23.3: GROUP-8-kbd ← / → キーナビゲーション
@@ -6416,6 +6421,8 @@ async function _extB1Close() {
   _extActiveSession = null;
   document.getElementById("ext-b1-overlay").style.display = "none";
   _extRenderSessionsList();
+  // v1.25.3: 閉鎖時に統合テーブルのステータス・進捗・サムネ統計を再描画（ページ全体リロード不要）
+  _extRenderFolderList();
 }
 
 // v1.24.0 GROUP-5-A: メタ付与ファイル名生成（background.js L460 `buildFilenameWithMeta` と仕様を一致させること）
@@ -6781,8 +6788,9 @@ function _extB1RenderThumbsPage(session, filtered) {
 
   if (cnt)  cnt.textContent  = `${total} / ${session.queue.length} 件 ｜ 表示 ${total === 0 ? 0 : from + 1}-${to}`;
   if (info) info.textContent = `${page + 1} / ${totalPages} ページ`;
-  if (btnPrev) btnPrev.disabled = (page <= 0);
-  if (btnNext) btnNext.disabled = (page >= totalPages - 1);
+  // v1.25.3: ページャーをループ構造化したため境界での disabled は無効化（0 件時のみ disabled）
+  if (btnPrev) btnPrev.disabled = (totalPages <= 1);
+  if (btnNext) btnNext.disabled = (totalPages <= 1);
 
   // v1.24.0 GROUP-10-a: 既存カードをすべて display:none（破棄せず保持）
   for (const card of _extB1ThumbsCardCache.values()) {
@@ -7034,9 +7042,11 @@ function _extB1HandleArrowKey(event) {
       return;
     }
     _extB1ThumbsKbdLastAt = now;
+    // v1.25.3 BUG-ext-thumbs-scroll-paging: サムネ一覧モーダル表示中の ← / → キーは
+    //   トラックパッドの横スワイプ／tilt-wheel のマウス環境で意図しないページ送りを誘発する
+    //   との報告があり、v1.23.3 の設計を変更してページ送りを無効化。
+    //   フォーカスを下層（1 枚ずつオーバーレイ）へ伝播させないため、event だけ consume する。
     event.preventDefault();
-    _extB1ThumbsPage += delta;
-    _extB1RenderThumbsPage(_extActiveSession, _extB1GetFilteredIndices(_extActiveSession));
     return;
   }
 
