@@ -5,6 +5,22 @@
 
 ---
 
+## [1.24.2] - 2026-04-18
+
+### Fixed
+- **X 拡大画像で保存ボタンが出ない問題の真因を修正**（BUG-x-photo-2 真因対応）
+  - v1.24.1 で追加した④ フォールバック（aria-label + depth walk）は**防御としては有効だが今回の症状の直接原因ではなかった**。実際の原因は <code>content.js</code> の scroll イベントハンドラが即 `hideNow` を呼んでいたこと。
+  - X の <code>/status/.../photo/N</code> 拡大モーダルは内部スクロール可能コンテナ（<code>data-testid="swipe-to-dismiss"</code> 等）を持ち、モーダル表示中に scroll イベントが頻発する。従来は `document.addEventListener("scroll", hideNow, { capture: true })` で即座にボタンを隠していたため、mouseover →①が IMG に hit → `showAt` で `opacity=1` → 直後の scroll で `hideNow` により `opacity=0`、以降マウスが img 上に静止＝新たな mouseover が発火せず、ボタンは「作られているが常に透明」という状態が続いていた（`document.getElementById('__image-saver-wrap__')` は要素を返すが opacity は "0"）。
+  - 対策：scroll ハンドラを「img がまだマウス下なら `showAt` で位置のみ再計算（opacity=1 維持）／マウスが離れていれば従来通り `hideNow`」に変更。
+    - **X photo モーダル**：img は動かない → `inImg=true` → ボタン維持
+    - **通常ページのスクロール**：img が視界外へ → `inImg=false` → hide（従来挙動維持）
+    - **スクロール追従**：img が画面内で動く場合 → `inImg=true` → ボタンが追従（副次的 UX 改善）
+  - v1.24.1 の④フォールバックは削除せず保持。将来 X が再び `<a>` を撤廃した状態で別種の blur-up 構造を採用した場合の防御として有用。
+- manifest.json: 1.24.1 → 1.24.2
+- **native/image_saver.py は変更なし**（version 1.10.0 据え置き）
+
+---
+
 ## [1.24.1] - 2026-04-18
 
 ### Fixed

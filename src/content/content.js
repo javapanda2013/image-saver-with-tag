@@ -289,5 +289,22 @@ document.addEventListener("mouseout", (e) => {
   if (to && hoverWrap && (to === hoverWrap || hoverWrap.contains(to))) return;
 }, { passive: true });
 
-document.addEventListener("scroll", hideNow, { passive: true, capture: true });
-window.addEventListener("resize",   hideNow, { passive: true });
+// v1.24.2 BUG-x-photo-2 真因対応: scroll 発火で即 hideNow すると、X の /photo/N
+// 拡大モーダルが持つ内部スクロール可能コンテナ（data-testid="swipe-to-dismiss" 等）
+// での連続 scroll イベントにより、showAt 直後に opacity=0 に戻されてしまい
+// 「ボタンは作られているが常に透明」という状態になっていた。
+// 対策：scroll 時は img 位置を再評価し、マウスがまだ img 上なら showAt で位置再計算
+// のみ（opacity=1 維持）、マウスが img から離れていれば従来通り hideNow。
+document.addEventListener("scroll", () => {
+  if (!currentImg || !hoverWrap) return;
+  const rect = currentImg.getBoundingClientRect();
+  const pad  = 8;
+  const inImg = lastMouseX >= rect.left - pad && lastMouseX <= rect.right  + pad &&
+                lastMouseY >= rect.top  - pad && lastMouseY <= rect.bottom + pad;
+  if (inImg) {
+    showAt(currentImg); // img がまだマウス下なら位置のみ再計算（スクロール追従）
+  } else {
+    hideNow();          // img から外れていれば従来通り hide
+  }
+}, { passive: true, capture: true });
+window.addEventListener("resize", hideNow, { passive: true });
