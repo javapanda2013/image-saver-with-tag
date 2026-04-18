@@ -1223,20 +1223,24 @@
           <span id="ext-fl-bulk-count" style="font-size:11px;color:#666;margin-left:auto;"></span>
         </div>
         <!-- v1.25.0 GROUP-12-merge: 取り込み予定フォルダリストとセッション一覧を統合
-             列順：☐ / 状態 / フォルダパス / 操作 / 進捗 / サムネ -->
-        <table id="ext-fl-table" style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;">
+             列順：☐ / 状態 / フォルダパス / 操作 / 進捗 / サムネ
+             v1.25.1 BUG-ext-table-narrow: 狭 viewport（720px body）対策で列幅を引き締め、
+             min-width 700px ＋ 外側 div の overflow-x: auto で極端な狭さでは横スクロールに逃がす -->
+        <div style="overflow-x:auto;">
+        <table id="ext-fl-table" style="width:100%;min-width:700px;border-collapse:collapse;font-size:12px;table-layout:fixed;">
           <thead>
             <tr style="background:#f5f5f5;">
               <th style="padding:5px 4px;text-align:center;border:1px solid #e0e0e0;width:28px;">☑</th>
-              <th style="padding:5px 6px;text-align:center;border:1px solid #e0e0e0;width:68px;">状態</th>
+              <th style="padding:5px 6px;text-align:center;border:1px solid #e0e0e0;width:60px;">状態</th>
               <th style="padding:5px 8px;text-align:left;border:1px solid #e0e0e0;">フォルダパス</th>
-              <th style="padding:5px 6px;text-align:left;border:1px solid #e0e0e0;width:230px;">操作</th>
-              <th style="padding:5px 6px;text-align:left;border:1px solid #e0e0e0;width:200px;">進捗</th>
-              <th style="padding:5px 6px;text-align:left;border:1px solid #e0e0e0;width:140px;">サムネ</th>
+              <th style="padding:5px 6px;text-align:left;border:1px solid #e0e0e0;width:160px;">操作</th>
+              <th style="padding:5px 6px;text-align:left;border:1px solid #e0e0e0;width:160px;">進捗</th>
+              <th style="padding:5px 6px;text-align:left;border:1px solid #e0e0e0;width:110px;">サムネ</th>
             </tr>
           </thead>
           <tbody id="ext-fl-tbody"></tbody>
         </table>
+        </div>
         <div id="ext-fl-empty" style="font-size:12px;color:#888;padding:8px;text-align:center;">
           登録されたフォルダはありません。
         </div>

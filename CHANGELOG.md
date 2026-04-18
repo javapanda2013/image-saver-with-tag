@@ -5,6 +5,19 @@
 
 ---
 
+## [1.25.1] - 2026-04-18
+
+### Fixed
+- **外部取り込み統合テーブルが狭い viewport で表示崩れする不具合を修正**（BUG-ext-table-narrow）
+  - v1.25.0 の `ext-fl-table` は固定列幅の合計（28 + 68 + 230 + 200 + 140 = 666px）が大きく、720px body の余剰 54px しか「フォルダパス」列（flex）に残っていなかった。`table-layout: fixed` ＋ `word-break: break-all` の組合せで、wide-tab breakpoint（1000px）未満の狭い viewport ではヘッダ「フォルダパス」もパス内容も 1 文字ずつ改行される表示崩れが発生していた。
+  - 固定列幅を引き締め：☑ 28（同）／状態 60（←68）／操作 160（←230）／進捗 160（←200）／サムネ 110（←140）。総固定幅 518px に削減し、パス列へ余剰を回す。
+  - `ext-fl-table` に `min-width: 700px` を付与し、極端に狭い viewport では外側 `div` の `overflow-x: auto` で横スクロールに逃がす（視認性維持）。
+  - wide-tab（1000px / 1280px / 1600px breakpoints）では従来通り余裕のある列幅で表示される。
+- manifest.json: 1.25.0 → 1.25.1
+- **native/image_saver.py は変更なし**（version 1.10.0 据え置き）
+
+---
+
 ## [1.25.0] - 2026-04-18
 
 ### Added
