@@ -5,6 +5,51 @@
 
 ---
 
+## [1.24.0] - 2026-04-18
+
+### Added
+- **外部取り込み「1 枚ずつ形式」でファイル名にタグ・権利者を反映**（GROUP-5-A）
+  - v1.23.1 で整合のため一時的に除去していた「メタ付与ファイル名」（`buildFilenameWithMeta`）を b1 保存経路に復帰。v1.23.1 は「両側原名で整合」だったのを、v1.24.0 で「両側メタ名で整合」に揃える。
+  - 挙動マトリクス（`_extB1CopyToDest` と `filenameIncludeTag/Subtag/Author` の組合せ）：
+    - **同一フォルダ × メタ付与 ON**：Native 側の新コマンド `RENAME_FILE` で原ファイルをメタ名へリネーム。`cur.filePath` / `cur.fileName` も queue に反映し、サムネ生成・saveHistory 記録・COPY 宛先のすべてで一貫したメタ名を使う。
+    - **同一フォルダ × メタ付与 OFF**：no-op（原名で saveHistory に記録、物理操作なし）。
+    - **別フォルダ × メタ付与 ON**：メタ名で `COPY_LOCAL_FILE`（saveHistory もメタ名）。
+    - **別フォルダ × メタ付与 OFF**：原名で `COPY_LOCAL_FILE`（saveHistory も原名）。
+  - 変数 `effectiveFilename` を `_extB1SaveAndNext` 内で一本化し、saveHistory 書き込みと物理操作（RENAME / COPY）の両方で同じ値を参照。片側だけ更新する事故を構造的に防ぐ。
+  - **エラー処理**：
+    - `RENAME_FILE` 失敗時は**保存なし扱い**（saveHistory にも書かず、カーソル進めず、`showStatus` でエラー提示）。再保存できる状態を維持。
+    - ターゲット既存時は Native が `{ok:false, errorCode:"DST_EXISTS"}` を返し、フロント側で同様に保存なし扱いへ（勝手に別名で残さず、queue と saveHistory の整合を守る）。
+    - `COPY_LOCAL_FILE` 失敗時は v1.23.0 からの既存仕様踏襲（saveHistory 書込済み＋`⚠️ 保存は成功、コピー失敗` 表示）。本リリースでは変更しない。
+
+- **Native `RENAME_FILE` コマンド新設**（`native/image_saver.py`）
+  - `os.rename` 単純ラップ。ターゲット既存時は `FileExistsError` 相当を `{ok:false, errorCode:"DST_EXISTS"}` として返す（`unique_path` で勝手に別名にしない）。
+  - 同一パスへのリネーム要求（`os.path.samefile` で判定）は `{ok:true, noop:true}` として成功扱い。
+  - `image_saver.py` 先頭 `version:` コメント：**1.9.9 → 1.10.0**。
+
+### Changed
+- **外部取り込み 1 枚ずつ形式メイン画像プレビューの連打耐性**（GROUP-10-a B-4）
+  - `_extB1LoadCurrent` 内に世代カウンタ `_extB1PreviewGen` を導入。フェッチ発火時にインクリメントし、レスポンス受領時にクロージャ保存した世代と照合。古い世代のレスポンスは `#ext-b1-preview-img` に書き込まない。
+  - ナビ連打（`_extB1NavMove` / ← → キー）時に遅延レスポンスが新しい画像を上書きしてしまう視覚的不整合を解消。
+
+- **サムネ一覧モーダルの DOM 保持化**（GROUP-10-a B-1(ア)）
+  - ページ送り時の `grid.innerHTML = ""` を廃止し、`Map<qIdx, cardElement>` で DOM をキャッシュ。ページ切替は `display` 切替のみで、旧ページのカード DOM は保持。
+  - 効果：
+    - 遅延レスポンスが正しいカードの `img` に書き込まれるため、視覚的実害が消失（世代カウンタはサムネ側には不要）。
+    - ページを戻った際に既取得のサムネが即時表示される（再フェッチ不要）。
+    - セッション切替時のみキャッシュクリア（qIdx がセッションローカルなため）。
+  - カードのステータスバッジ色／枠色／カーソル枠／ファイル名は、キャッシュ再表示時に常に最新化（GROUP-5-A で RENAME 後の `fileName` 変化にも追従）。
+  - フェッチ未完了または失敗で `img.src` が空なら、モーダル再オープン時に自動再発射（多重発射防止のため `img.dataset.fetching` ガード付き）。
+
+- **サムネ一覧モーダルの同時発射数を 5 件に制限**（GROUP-10-c）
+  - `GENERATE_THUMBS_BATCH` / `READ_LOCAL_IMAGE_BASE64` の発射を軽量セマフォ（`_EXT_B1_SEMAPHORE_LIMIT = 5`）越しにキューイング。
+  - 1 ページ 100 件の並列発射による Native プロセス競合と、モーダル閉鎖後の残タスク滞留を抑制。
+  - 対象は**サムネ一覧モーダル内の発射のみ**（`_extB1FireThumbFetch`）。他経路（b1 保存時のサムネ生成は単発、メイン画像プレビューは単発、一括インポートは既に逐次）は現行挙動を維持。
+
+- manifest.json: 1.23.6 → 1.24.0
+- native/image_saver.py: **version 1.9.9 → 1.10.0**（`RENAME_FILE` 追加）
+
+---
+
 ## [1.23.6] - 2026-04-18
 
 ### Changed

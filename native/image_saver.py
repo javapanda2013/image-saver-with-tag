@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 image_saver.py  —  Firefox Native Messaging ホスト
-version: 1.9.9
+version: 1.10.0
 
 受け取るコマンド:
   {"cmd": "LIST_DIR",      "path": null}
@@ -9,6 +9,7 @@ version: 1.9.9
   {"cmd": "SAVE_IMAGE",    "url": "...", "savePath": "C:\\\\...\\\\photo.jpg"}
   {"cmd": "MKDIR",         "path": "C:\\\\...\\\\新フォルダ"}
   {"cmd": "OPEN_EXPLORER", "path": "C:\\\\...\\\\フォルダ"}
+  {"cmd": "RENAME_FILE",   "srcPath": "...", "dstPath": "..."}  # v1.10.0 GROUP-5-A
 """
 
 import sys
@@ -1213,6 +1214,52 @@ def handle_copy_file(src_path, dst_path):
         return {"ok": False, "error": str(e)}
 
 
+def handle_rename_file(src_path, dst_path):
+    """
+    v1.10.0: GROUP-5-A 対応。ローカルファイルを src_path から dst_path へリネームする。
+    - 外部取り込み「1 枚ずつ形式」で、同一フォルダ内でメタ付与ファイル名へ改名する際に使用
+    - コピーではなく os.rename（移動）。src と dst の親ディレクトリが異なってもリネーム可能だが、
+      呼び出し側（settings.js の _extB1SaveAndNext）は同一フォルダ内での改名のみ発火させる想定
+    - ターゲットが既存の場合は FileExistsError を返し、呼び出し側で「保存なし扱い」にする
+      （unique_path で勝手に別名に変えると saveHistory と queue の整合が崩れるため）
+    """
+    try:
+        if not src_path or not os.path.isfile(src_path):
+            return {"ok": False, "error": f"リネーム元ファイルが見つかりません: {src_path}"}
+
+        if not dst_path:
+            return {"ok": False, "error": "リネーム先パスが空です"}
+
+        if os.path.exists(dst_path):
+            # 同一パスへのリネーム要求は no-op 扱いで成功
+            try:
+                if os.path.samefile(src_path, dst_path):
+                    return {"ok": True, "savedPath": dst_path, "noop": True}
+            except Exception:
+                pass
+            return {
+                "ok":        False,
+                "error":     f"リネーム先が既存です: {dst_path}",
+                "errorCode": "DST_EXISTS",
+            }
+
+        dst_dir = os.path.dirname(dst_path)
+        if dst_dir and not os.path.isdir(dst_dir):
+            return {
+                "ok":        False,
+                "error":     f"リネーム先フォルダが存在しません: {dst_dir}",
+                "errorCode": "DIR_NOT_FOUND",
+            }
+
+        os.rename(src_path, dst_path)
+        return {"ok": True, "savedPath": dst_path}
+
+    except PermissionError:
+        return {"ok": False, "error": f"書き込み権限がありません: {dst_path}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def unique_path(path):
     """
     ファイルが既に存在する場合、連番を付与してユニークなパスを返す
@@ -1350,6 +1397,13 @@ def _dispatch_command(message):
     # v1.23.0: GROUP-1-b 外部取り込み時に指定保存先へローカルファイルをコピー
     elif cmd == "COPY_FILE":
         return handle_copy_file(
+            message.get("srcPath", ""),
+            message.get("dstPath", ""),
+        )
+
+    # v1.10.0: GROUP-5-A 外部取り込み 1 枚ずつ形式で同一フォルダ内のメタ付与リネーム
+    elif cmd == "RENAME_FILE":
+        return handle_rename_file(
             message.get("srcPath", ""),
             message.get("dstPath", ""),
         )

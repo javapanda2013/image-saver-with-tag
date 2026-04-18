@@ -288,6 +288,18 @@ browser.runtime.onMessage.addListener(async (message) => {
       addLog("INFO", `外部取り込みコピー: ${srcPath}`, `→ ${dstPath}`);
       return sendNative({ cmd: "COPY_FILE", srcPath, dstPath });
     }
+    // v1.24.0: GROUP-5-A 外部取り込み 1 枚ずつ形式で同一フォルダ内メタ付与リネーム
+    //   - 呼び出し側（settings.js の _extB1SaveAndNext）は「同一フォルダ × メタ付与 ON」時のみ発火
+    //   - RENAME 失敗は呼び出し側で「保存なし扱い」に落ちる設計（saveHistory にも書かない、カーソル進めない）
+    //   - ターゲット既存時は Native が ok:false を返す（勝手に別名で残すと queue と saveHistory の整合が壊れるため）
+    case "RENAME_FILE": {
+      const { srcPath, dstPath } = message;
+      if (!srcPath || !dstPath) {
+        return { ok: false, error: "RENAME_FILE: srcPath/dstPath は必須" };
+      }
+      addLog("INFO", `外部取り込みリネーム: ${srcPath}`, `→ ${dstPath}`);
+      return sendNative({ cmd: "RENAME_FILE", srcPath, dstPath });
+    }
     case "GET_STORAGE_SIZE":
       return getStorageSize();
     // ---- エクスプローラーで開く ----

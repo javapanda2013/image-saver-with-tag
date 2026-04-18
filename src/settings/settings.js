@@ -6033,6 +6033,44 @@ async function _extOpenB1(session) {
   await _extB1LoadCurrent();
 }
 
+// v1.24.0 GROUP-10-a: メイン画像プレビューの世代カウンタ
+//   `_extB1LoadCurrent` 発火時にインクリメントし、クロージャで保存した世代 ID と
+//   レスポンス受領時の世代 ID を照合。古ければ `imgEl.src` に書き込まない。
+//   サムネ一覧モーダル側は GROUP-10-a B-1(ア) の DOM 保持（Map<qIdx, cardElement>）で
+//   遅延レスポンスの視覚的実害が消えるため、世代カウンタは不要。
+let _extB1PreviewGen = 0;
+
+// v1.24.0 GROUP-10-c: サムネ一覧モーダル用セマフォ（同時 5 件まで）
+//   L6542 / L6551 の async IIFE で取得・解放。他経路（b1 保存時のサムネ生成・メイン画像・
+//   一括インポート）はすでに単発 or 逐次のため対象外。
+const _EXT_B1_SEMAPHORE_LIMIT = 5;
+let _extB1SemaActive = 0;
+const _extB1SemaQueue = [];
+function _extB1SemaAcquire() {
+  return new Promise((resolve) => {
+    if (_extB1SemaActive < _EXT_B1_SEMAPHORE_LIMIT) {
+      _extB1SemaActive++;
+      resolve();
+    } else {
+      _extB1SemaQueue.push(resolve);
+    }
+  });
+}
+function _extB1SemaRelease() {
+  if (_extB1SemaQueue.length > 0) {
+    const next = _extB1SemaQueue.shift();
+    next(); // スロット維持のまま次に転送
+  } else {
+    _extB1SemaActive--;
+  }
+}
+
+// v1.24.0 GROUP-10-a: サムネ一覧モーダル内の DOM キャッシュ（B-1(ア) 採用）
+//   キー: qIdx、値: cardElement。ページ送り時は `innerHTML=""` を廃止し、display 切替で表示制御
+//   セッション切替時にクリア（qIdx がセッションローカルのため）
+const _extB1ThumbsCardCache = new Map();
+let _extB1ThumbsCacheSessionKey = null;
+
 async function _extB1LoadCurrent() {
   const session = _extActiveSession;
   if (!session) return;
@@ -6117,12 +6155,21 @@ async function _extB1LoadCurrent() {
   const infoEl = document.getElementById("ext-b1-preview-info");
   if (imgEl)  imgEl.src = "";
   if (infoEl) infoEl.textContent = "⏳ プレビュー読み込み中...";
+
+  // v1.24.0 GROUP-10-a: 世代カウンタを前進し、このフェッチに対応する世代 ID をクロージャ保存。
+  //   連打で `_extB1LoadCurrent` が重なって発火した場合でも、古いレスポンスが後から届いた際に
+  //   `imgEl.src` を上書きしないよう、DOM 書き込み直前に世代照合する。
+  _extB1PreviewGen++;
+  const _myPreviewGen = _extB1PreviewGen;
+
   try {
     const res = await browser.runtime.sendMessage({
       type: "READ_LOCAL_IMAGE_BASE64",
       path: cur2.filePath,
       maxSize: 1600,
     });
+    // v1.24.0 GROUP-10-a: 世代照合。古いレスポンスは破棄（DOM 反映しない）
+    if (_myPreviewGen !== _extB1PreviewGen) return;
     if (res?.ok && res.dataUrl) {
       if (imgEl) imgEl.src = res.dataUrl;
       if (infoEl) infoEl.textContent = `${res.width}×${res.height}` + (res.resized ? "（縮小表示）" : "");
@@ -6157,6 +6204,8 @@ async function _extB1LoadCurrent() {
       if (infoEl) infoEl.textContent = `⚠ プレビュー取得失敗: ${res?.error || "unknown"}`;
     }
   } catch (e) {
+    // v1.24.0 GROUP-10-a: エラー表示も古い世代なら出さない（新しい世代が処理中 or 成功済みの可能性）
+    if (_myPreviewGen !== _extB1PreviewGen) return;
     if (infoEl) infoEl.textContent = `⚠ プレビュー取得エラー: ${e.message || ""}`;
   }
 }
@@ -6195,6 +6244,34 @@ async function _extB1Close() {
   _extRenderSessionsList();
 }
 
+// v1.24.0 GROUP-5-A: メタ付与ファイル名生成（background.js L460 `buildFilenameWithMeta` と仕様を一致させること）
+// 片側だけ更新して不整合を起こさないよう、仕様変更時は両方同時に修正する
+function _extB1BuildFilenameWithMeta(filename, tags, subTags, authors, settings) {
+  const { filenameIncludeTag, filenameIncludeSubtag, filenameIncludeAuthor } = settings;
+  if (!filenameIncludeTag && !filenameIncludeSubtag && !filenameIncludeAuthor) return filename;
+  const dotIdx = filename.lastIndexOf(".");
+  const stem = dotIdx > 0 ? filename.slice(0, dotIdx) : filename;
+  const ext  = dotIdx > 0 ? filename.slice(dotIdx) : "";
+  const sanitize = (s) => s
+    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/[\x00-\x1f]/g, "")
+    .replace(/[\s.]+$/, "")
+    .trim();
+  const parts = [];
+  if (filenameIncludeTag    && tags?.length)    parts.push(...tags.map(sanitize).filter(Boolean));
+  if (filenameIncludeSubtag && subTags?.length) parts.push(...subTags.map(sanitize).filter(Boolean));
+  if (filenameIncludeAuthor && authors?.length) parts.push(...authors.map(sanitize).filter(Boolean));
+  if (parts.length === 0) return filename;
+  return `${stem}-${parts.join("-")}${ext}`;
+}
+
+// v1.24.0 GROUP-5-A: 同一フォルダ判定（background.js COPY_LOCAL_FILE ハンドラの判定と揃える）
+//   大文字小文字無視、区切り正規化、末尾スラッシュ除去
+function _extB1IsSameFolder(dirA, dirB) {
+  const norm = (p) => (p || "").replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+  return norm(dirA) === norm(dirB);
+}
+
 async function _extB1SaveAndNext() {
   const session = _extActiveSession;
   if (!session) return;
@@ -6219,10 +6296,48 @@ async function _extB1SaveAndNext() {
   _extB1LastCarryValues.authors  = [...authors];
   _extB1LastCarryValues.savepath = savePath;
 
-  // ファイル名（ファイル名メタ埋め込みは行わない。外部取り込みはファイル名を変更しない）
-  const filename = cur.fileName;
+  // v1.24.0 GROUP-5-A: メタ付与名を一本化（saveHistory と物理操作の両方で同じ値を使う）
+  //   v1.23.1 の「両側原名で整合」を逆向きに「両側メタ名で整合」へ揃える改修
+  const fnameSettings = await browser.storage.local.get(["filenameIncludeTag", "filenameIncludeSubtag", "filenameIncludeAuthor"]);
+  const effectiveFilename = _extB1BuildFilenameWithMeta(cur.fileName, tags, subTags, authors, {
+    filenameIncludeTag:    !!fnameSettings.filenameIncludeTag,
+    filenameIncludeSubtag: !!fnameSettings.filenameIncludeSubtag,
+    filenameIncludeAuthor: !!fnameSettings.filenameIncludeAuthor,
+  });
+  const metaChanged = (effectiveFilename !== cur.fileName);
 
-  // サムネイル生成（Python 経由）
+  // v1.24.0 GROUP-5-A: 物理的同一フォルダ判定
+  //   - `_extB1CopyToDest` OFF：物理ファイルはその場（原フォルダ）に残るため「同一フォルダ扱い」
+  //   - `_extB1CopyToDest` ON かつ savePath == 原フォルダ：同上
+  const srcDir = _extDirname(cur.filePath);
+  const physicallySameFolder = !_extB1CopyToDest || _extB1IsSameFolder(srcDir, savePath);
+
+  // v1.24.0 GROUP-5-A: 同一フォルダ × メタ付与 ON の場合は RENAME_FILE を先に発火
+  //   RENAME 失敗は「保存なし扱い」で即終了（saveHistory にも書かず、カーソルも進めない）
+  //   衝突時（ターゲット既存）も勝手に別名で残さず失敗として扱う（Native 側で ok:false）
+  if (physicallySameFolder && metaChanged) {
+    const newPath = `${srcDir}\\${effectiveFilename}`;
+    let renameRes;
+    try {
+      renameRes = await browser.runtime.sendMessage({
+        type:    "RENAME_FILE",
+        srcPath: cur.filePath,
+        dstPath: newPath,
+      });
+    } catch (e) {
+      showStatus(`⚠️ リネーム送信エラー: ${e.message || ""}`, true);
+      return;
+    }
+    if (!renameRes?.ok) {
+      showStatus(`⚠️ リネーム失敗: ${renameRes?.error || "不明"}`, true);
+      return;
+    }
+    // queue 側のパスも更新（後続のサムネ生成・閲覧・エクスポートで使う）
+    cur.filePath = renameRes.savedPath || newPath;
+    cur.fileName = effectiveFilename;
+  }
+
+  // サムネイル生成（Python 経由）— リネーム後のパスを使う
   let thumbId = null;
   try {
     const res = await browser.runtime.sendMessage({
@@ -6240,14 +6355,14 @@ async function _extB1SaveAndNext() {
     }
   } catch (_) { /* サムネ失敗は無視 */ }
 
-  // saveHistory にエントリ追加
+  // v1.24.0 GROUP-5-A: saveHistory にエントリ追加（filename はメタ付与後の effectiveFilename）
   const entry = {
     id:         crypto.randomUUID(),
     savedAt:    cur.mtime || new Date().toISOString(),
     imageUrl:   "",
     pageUrl:    "",
     savePaths:  [savePath],
-    filename:   filename,
+    filename:   effectiveFilename,
     tags:       allTags,
     authors:    authors,
     thumbId:    thumbId,
@@ -6294,14 +6409,15 @@ async function _extB1SaveAndNext() {
 
   _extRenderSessionsList();
 
-  // v1.23.0: GROUP-1-b 指定保存先にコピー作成
-  if (_extB1CopyToDest) {
+  // v1.24.0 GROUP-5-A: 別フォルダの場合のみ COPY_LOCAL_FILE を発火（同一フォルダは RENAME で処理済み）
+  //   COPY 失敗は v1.23.0 からの既存仕様を踏襲：saveHistory は書込済み、警告表示のみ
+  if (_extB1CopyToDest && !physicallySameFolder) {
     try {
       const copyRes = await browser.runtime.sendMessage({
         type:    "COPY_LOCAL_FILE",
         srcPath: cur.filePath,
         dstDir:  savePath,
-        filename: filename,
+        filename: effectiveFilename,
         tags, subTags, authors,
       });
       if (!copyRes?.ok) {
@@ -6443,6 +6559,16 @@ async function _extB1OpenThumbsModal() {
   if (!modal || !grid) return;
   modal.style.display = "flex";
 
+  // v1.24.0 GROUP-10-a: B-1(ア) DOM キャッシュのセッション整合チェック
+  //   セッションが切り替わっていれば qIdx が別物を指すためキャッシュクリア
+  //   同一セッション内のモーダル再オープン時はキャッシュ維持で再フェッチを避ける
+  const sessionKey = session.id || session.createdAt || "default";
+  if (_extB1ThumbsCacheSessionKey !== sessionKey) {
+    _extB1ThumbsCardCache.clear();
+    grid.innerHTML = "";
+    _extB1ThumbsCacheSessionKey = sessionKey;
+  }
+
   // v1.23.2: カーソル（現在表示中の画像）が含まれるページへ初期フォーカス
   const cursorPos = filtered.indexOf(session.cursor);
   _extB1ThumbsPage = (cursorPos >= 0)
@@ -6452,7 +6578,11 @@ async function _extB1OpenThumbsModal() {
   _extB1RenderThumbsPage(session, filtered);
 }
 
-/** v1.23.2: GROUP-7-a サムネ一覧の 1 ページ分を描画 */
+/** v1.23.2: GROUP-7-a サムネ一覧の 1 ページ分を描画
+ *  v1.24.0 GROUP-10-a: B-1(ア) 採用 — `innerHTML=""` を廃止し、`_extB1ThumbsCardCache` で
+ *    qIdx → cardElement の DOM を保持。ページ送り時は display の切替のみ。
+ *    遅延レスポンスが正しいカードの `img` に書き込まれるため、世代カウンタ不要。
+ */
 function _extB1RenderThumbsPage(session, filtered) {
   const grid    = document.getElementById("ext-b1-thumbs-grid");
   const cnt     = document.getElementById("ext-b1-thumbs-count");
@@ -6476,86 +6606,157 @@ function _extB1RenderThumbsPage(session, filtered) {
   if (btnPrev) btnPrev.disabled = (page <= 0);
   if (btnNext) btnNext.disabled = (page >= totalPages - 1);
 
-  grid.innerHTML = "";
+  // v1.24.0 GROUP-10-a: 既存カードをすべて display:none（破棄せず保持）
+  for (const card of _extB1ThumbsCardCache.values()) {
+    card.style.display = "none";
+  }
+  // 空表示メッセージがあれば除去（残り続けるのを防ぐ）
+  const emptyMsg = grid.querySelector(".ext-thumbs-empty");
+  if (emptyMsg) emptyMsg.remove();
 
   if (total === 0) {
-    grid.innerHTML = `<div style="grid-column:1/-1;padding:30px;text-align:center;color:#888;">絞り込み結果が空です</div>`;
+    const msg = document.createElement("div");
+    msg.className = "ext-thumbs-empty";
+    msg.style.cssText = "grid-column:1/-1;padding:30px;text-align:center;color:#888;";
+    msg.textContent = "絞り込み結果が空です";
+    grid.appendChild(msg);
     return;
   }
 
+  // v1.24.0 GROUP-10-a: 当ページのカードを表示。キャッシュになければ生成して追加。
+  //   ステータス（完了/スキップ/残り）・カーソル枠・ファイル名は表示前に最新化する
+  //   （セッション中に保存されて status が変化、GROUP-5-A で filename が変わる等に対応）
   const pageItems = filtered.slice(from, to).map((qIdx) => ({ qIdx, q: session.queue[qIdx] }));
   pageItems.forEach(({ qIdx, q }) => {
-    const color = _EXT_STATUS_COLOR[q.status] || _EXT_STATUS_COLOR.pending;
-    const card = document.createElement("div");
-    card.style.cssText = `border:3px solid ${color};border-radius:4px;padding:4px;cursor:pointer;background:#fff;display:flex;flex-direction:column;gap:3px;min-width:0;`;
-    if (qIdx === session.cursor) {
-      card.style.outline = "2px dashed #2c3e50";
-      card.style.outlineOffset = "2px";
+    let card = _extB1ThumbsCardCache.get(qIdx);
+    if (!card) {
+      card = _extB1CreateThumbCard(session, qIdx, q);
+      _extB1ThumbsCardCache.set(qIdx, card);
+      grid.appendChild(card);
+    } else {
+      card.style.display = "";
+      _extB1RefreshThumbCardStatus(card, session, qIdx, q);
     }
+  });
+}
 
-    const thumbWrap = document.createElement("div");
-    thumbWrap.style.cssText = "width:100%;aspect-ratio:1/1;background:#222;border-radius:3px;overflow:hidden;display:flex;align-items:center;justify-content:center;position:relative;";
-    const img = document.createElement("img");
-    img.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;";
-    img.alt = q.fileName || "";
-    thumbWrap.appendChild(img);
+/** v1.24.0 GROUP-10-a: サムネカード新規生成
+ *  フェッチは `_extB1FireThumbFetch` 経由でセマフォ越し（GROUP-10-c、同時 5 件制限）
+ */
+function _extB1CreateThumbCard(session, qIdx, q) {
+  const card = document.createElement("div");
+  // ベースのレイアウト（枠色・カーソル枠は _extB1RefreshThumbCardStatus で上書き）
+  card.style.cssText = "border:3px solid #ccc;border-radius:4px;padding:4px;cursor:pointer;background:#fff;display:flex;flex-direction:column;gap:3px;min-width:0;";
 
-    // インデックスバッジ
-    const idxBadge = document.createElement("div");
-    idxBadge.style.cssText = "position:absolute;top:2px;left:2px;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:1px 5px;border-radius:2px;";
-    idxBadge.textContent = `#${qIdx + 1}`;
-    thumbWrap.appendChild(idxBadge);
+  const thumbWrap = document.createElement("div");
+  thumbWrap.style.cssText = "width:100%;aspect-ratio:1/1;background:#222;border-radius:3px;overflow:hidden;display:flex;align-items:center;justify-content:center;position:relative;";
+  const img = document.createElement("img");
+  img.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;";
+  img.alt = q.fileName || "";
+  thumbWrap.appendChild(img);
 
-    // ステータスバッジ
-    const statBadge = document.createElement("div");
+  // インデックスバッジ（固定）
+  const idxBadge = document.createElement("div");
+  idxBadge.style.cssText = "position:absolute;top:2px;left:2px;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:1px 5px;border-radius:2px;";
+  idxBadge.textContent = `#${qIdx + 1}`;
+  thumbWrap.appendChild(idxBadge);
+
+  // ステータスバッジ（色・文言は _extB1RefreshThumbCardStatus で更新）
+  const statBadge = document.createElement("div");
+  statBadge.className = "ext-thumb-stat";
+  thumbWrap.appendChild(statBadge);
+
+  card.appendChild(thumbWrap);
+
+  const name = document.createElement("div");
+  name.className = "ext-thumb-name";
+  name.style.cssText = "font-size:10px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+  name.textContent = q.fileName || "";
+  name.title = q.fileName || "";
+  card.appendChild(name);
+
+  card.addEventListener("click", async () => {
+    document.getElementById("ext-b1-thumbs-modal").style.display = "none";
+    session.cursor = qIdx;
+    session.updatedAt = new Date().toISOString();
+    await browser.storage.local.set({ extImportSessions: _extSessions });
+    await _extB1LoadCurrent();
+  });
+
+  // 初期スタイル適用（ステータスバッジ・枠色・カーソル枠）
+  _extB1RefreshThumbCardStatus(card, session, qIdx, q);
+
+  // v1.23.2: GROUP-7-c GIF はアニメ付きサムネを使う
+  //          GENERATE_THUMBS_BATCH は background.js で
+  //          thumbChunkPaths（Python 一時ファイル）→ Base64 変換まで
+  //          面倒を見る既存経路を流用。保存時サムネと同品質（600px アニメ GIF / quality=85 JPEG）。
+  // v1.24.0 GROUP-10-c: セマフォで同時発射数を 5 に制限
+  _extB1FireThumbFetch(img, q);
+
+  return card;
+}
+
+/** v1.24.0 GROUP-10-a: カードのステータスバッジ色／枠色／カーソル枠／ファイル名を最新化
+ *  キャッシュされたカード再表示時と、フェッチ未完了／失敗時の再発射に使う
+ */
+function _extB1RefreshThumbCardStatus(card, session, qIdx, q) {
+  const color = _EXT_STATUS_COLOR[q.status] || _EXT_STATUS_COLOR.pending;
+  card.style.borderColor = color;
+  if (qIdx === session.cursor) {
+    card.style.outline = "2px dashed #2c3e50";
+    card.style.outlineOffset = "2px";
+  } else {
+    card.style.outline = "";
+    card.style.outlineOffset = "";
+  }
+  const statBadge = card.querySelector(".ext-thumb-stat");
+  if (statBadge) {
     statBadge.style.cssText = `position:absolute;bottom:2px;right:2px;background:${color};color:#fff;font-size:10px;padding:1px 5px;border-radius:2px;font-weight:600;`;
     statBadge.textContent = q.status === "done" ? "完了" : (q.status === "skipped" ? "スキップ" : "残り");
-    thumbWrap.appendChild(statBadge);
+  }
+  const nameEl = card.querySelector(".ext-thumb-name");
+  if (nameEl) {
+    // GROUP-5-A で RENAME 後に queue[i].fileName が更新されるためここで反映
+    nameEl.textContent = q.fileName || "";
+    nameEl.title = q.fileName || "";
+  }
+  // フェッチ未完了 or 失敗で img.src が空なら再発射（モーダル再オープン時のリカバリ）
+  const img = card.querySelector("img");
+  if (img && !img.src && !img.dataset.fetching) {
+    _extB1FireThumbFetch(img, q);
+  }
+}
 
-    card.appendChild(thumbWrap);
-
-    const name = document.createElement("div");
-    name.style.cssText = "font-size:10px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
-    name.textContent = q.fileName || "";
-    name.title = q.fileName || "";
-    card.appendChild(name);
-
-    card.addEventListener("click", async () => {
-      document.getElementById("ext-b1-thumbs-modal").style.display = "none";
-      session.cursor = qIdx;
-      session.updatedAt = new Date().toISOString();
-      await browser.storage.local.set({ extImportSessions: _extSessions });
-      await _extB1LoadCurrent();
+/** v1.24.0 GROUP-10-a / GROUP-10-c: サムネフェッチ発射（セマフォ越し）
+ *  img.dataset.fetching で多重発射防止（再発射経路での重複防止）
+ */
+async function _extB1FireThumbFetch(img, q) {
+  if (!img || img.dataset.fetching) return;
+  img.dataset.fetching = "1";
+  await _extB1SemaAcquire();
+  try {
+    const lc = (q.filePath || "").toLowerCase();
+    if (lc.endsWith(".gif")) {
+      const r = await browser.runtime.sendMessage({
+        type:  "GENERATE_THUMBS_BATCH",
+        paths: [q.filePath],
+      });
+      const b64  = r?.thumbs?.[q.filePath];
+      const mime = r?.thumbMimes?.[q.filePath] || "image/gif";
+      if (b64) img.src = `data:${mime};base64,${b64}`;
+      return;
+    }
+    const res = await browser.runtime.sendMessage({
+      type:    "READ_LOCAL_IMAGE_BASE64",
+      path:    q.filePath,
+      maxSize: 180,
     });
-
-    grid.appendChild(card);
-
-    // v1.23.2: GROUP-7-c GIF はアニメ付きサムネを使う
-    //          GENERATE_THUMBS_BATCH は background.js で
-    //          thumbChunkPaths（Python 一時ファイル）→ Base64 変換まで
-    //          面倒を見る既存経路を流用。保存時サムネと同品質（600px アニメ GIF / quality=85 JPEG）。
-    (async () => {
-      try {
-        const lc = (q.filePath || "").toLowerCase();
-        if (lc.endsWith(".gif")) {
-          const r = await browser.runtime.sendMessage({
-            type:  "GENERATE_THUMBS_BATCH",
-            paths: [q.filePath],
-          });
-          const b64  = r?.thumbs?.[q.filePath];
-          const mime = r?.thumbMimes?.[q.filePath] || "image/gif";
-          if (b64) img.src = `data:${mime};base64,${b64}`;
-          return;
-        }
-        const res = await browser.runtime.sendMessage({
-          type:    "READ_LOCAL_IMAGE_BASE64",
-          path:    q.filePath,
-          maxSize: 180,
-        });
-        if (res?.ok && res.dataUrl) img.src = res.dataUrl;
-      } catch (_) { /* 無視 */ }
-    })();
-  });
+    if (res?.ok && res.dataUrl) img.src = res.dataUrl;
+  } catch (_) { /* 無視 */ }
+  finally {
+    _extB1SemaRelease();
+    delete img.dataset.fetching;
+  }
 }
 
 // v1.23.3: GROUP-8-kbd ← / → キーナビゲーション用スロットル時刻（サムネ一覧モーダル時のみ適用）
