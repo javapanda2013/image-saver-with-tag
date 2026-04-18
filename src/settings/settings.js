@@ -108,11 +108,21 @@ document.addEventListener("DOMContentLoaded", async () => {
       document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
       // 選択タブがタブバーからはみ出している場合にスクロールして全体を表示
       btn.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      // v1.25.0 GROUP-12-width: 外部取り込みタブ時のみ body に wide-tab クラスを付与し、
+      // レスポンシブ max-width（720 / 960 / 1200 / 1480px）を有効化
+      document.body.classList.toggle("wide-tab", btn.dataset.tab === "external-import");
       // 保存履歴タブに切り替えたら描画
       if (btn.dataset.tab === "history") renderHistoryTab();
       if (btn.dataset.tab === "authors") renderAuthorsTab();
     });
   });
+  // v1.25.0 GROUP-12-width: 初期表示時に現在アクティブタブが external-import なら wide-tab を適用
+  {
+    const activeInitial = document.querySelector(".tab-btn.active");
+    if (activeInitial) {
+      document.body.classList.toggle("wide-tab", activeInitial.dataset.tab === "external-import");
+    }
+  }
 
   await loadData();
   renderAll();
@@ -5361,10 +5371,226 @@ async function _extScanMultiRootForBatch(selEntries) {
   }
 }
 
-function _extRenderFolderList() {
+// v1.25.0 GROUP-12-merge / GROUP-7-b-ui: 外部取り込み統合テーブル用ヘルパー群
+// ----------------------------------------------------------------
+// サムネ統計キャッシュ（background.js の externalImportThumbStats を反映）
+let _extThumbStatsCache = {};
+
+// ステータスバッジ色（進行中=青、未開始=グレー、完了=緑、空=オレンジ）
+const _EXT_STATUS_BADGE_COLOR = {
+  notstarted: "#95a5a6",
+  inprogress: "#3498db",
+  done:       "#2ecc71",
+  empty:      "#e67e22",
+};
+
+function _extBuildStatusBadge(kind, label) {
+  const color = _EXT_STATUS_BADGE_COLOR[kind] || "#95a5a6";
+  const span = document.createElement("span");
+  span.style.cssText = `display:inline-block;font-size:10px;color:#fff;background:${color};padding:2px 7px;border-radius:8px;font-weight:600;white-space:nowrap;`;
+  span.textContent = label;
+  return span;
+}
+
+/** 対象パスに対応する最新セッションを返す（Q4=A: UI 側で 1:1 フィルタ） */
+function _extFindLatestSession(targetPath) {
+  if (!targetPath) return null;
+  const norm = (p) => (p || "").toLowerCase();
+  const t = norm(targetPath);
+  let latest = null;
+  for (const s of _extSessions) {
+    // session.name（1 枚ずつ形式の画面上の表示名。subfolderPath または rootPath）と
+    // session.rootPath の両方で一致を試みる
+    if (norm(s.name) !== t && norm(s.rootPath) !== t) continue;
+    if (!latest || new Date(s.updatedAt || s.createdAt || 0) > new Date(latest.updatedAt || latest.createdAt || 0)) {
+      latest = s;
+    }
+  }
+  return latest;
+}
+
+/** 行の状態を判定：未開始 / 進行中 / 完了 / 空 */
+function _extDetermineStatus(targetPath) {
+  const session = _extFindLatestSession(targetPath);
+  if (session) {
+    const queue = session.queue || [];
+    if (queue.length === 0) return { kind: "empty", label: "空", session };
+    const pending = queue.filter(q => q.status === "pending").length;
+    if (pending > 0) return { kind: "inprogress", label: "進行中", session };
+    return { kind: "done", label: "完了", session };
+  }
+  if (_extFlIsCompleted(targetPath)) return { kind: "done", label: "完了", session: null };
+  return { kind: "notstarted", label: "未開始", session: null };
+}
+
+/** 進捗セル（縦積み：数値/% → バー → 完/skip/残） */
+function _extBuildProgressCell(session) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:flex;flex-direction:column;gap:2px;";
+  if (!session) {
+    const dash = document.createElement("span");
+    dash.style.cssText = "color:#aaa;font-size:11px;";
+    dash.textContent = "—";
+    wrap.appendChild(dash);
+    return wrap;
+  }
+  const queue = session.queue || [];
+  const total = queue.length;
+  const done = queue.filter(q => q.status === "done").length;
+  const skipped = queue.filter(q => q.status === "skipped").length;
+  const pending = queue.filter(q => q.status === "pending").length;
+  const pct = total > 0 ? ((done + skipped) / total * 100).toFixed(1) : "0.0";
+
+  const line1 = document.createElement("div");
+  line1.style.cssText = "font-size:11px;color:#2c3e50;";
+  line1.textContent = `${done + skipped} / ${total}（${pct}%）`;
+  wrap.appendChild(line1);
+
+  const barBg = document.createElement("div");
+  barBg.style.cssText = "position:relative;max-width:180px;height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;";
+  if (total > 0) {
+    const donePct = (done / total * 100);
+    const skipPct = (skipped / total * 100);
+    const doneBar = document.createElement("div");
+    doneBar.style.cssText = `position:absolute;left:0;top:0;height:100%;width:${donePct}%;background:#2ecc71;`;
+    const skipBar = document.createElement("div");
+    skipBar.style.cssText = `position:absolute;left:${donePct}%;top:0;height:100%;width:${skipPct}%;background:#e67e22;`;
+    barBg.appendChild(doneBar);
+    barBg.appendChild(skipBar);
+  }
+  wrap.appendChild(barBg);
+
+  const line3 = document.createElement("div");
+  line3.style.cssText = "font-size:10px;color:#666;";
+  line3.innerHTML = `<span style="color:#2ecc71;">完 ${done}</span>・<span style="color:#e67e22;">skip ${skipped}</span>・<span style="color:#888;">残 ${pending}</span>`;
+  wrap.appendChild(line3);
+  return wrap;
+}
+
+/** サムネ統計セル（GROUP-7-b-ui）：件数 / サイズ ＋ 🗑 削除 */
+function _extBuildThumbCell(rootPath) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:flex;flex-direction:column;gap:3px;font-size:11px;";
+  const s = _extThumbStatsCache[rootPath];
+  if (!s || !s.count) {
+    const dash = document.createElement("span");
+    dash.style.cssText = "color:#aaa;";
+    dash.textContent = "—";
+    wrap.appendChild(dash);
+    return wrap;
+  }
+  const mb = (s.bytes || 0) / (1024 * 1024);
+  const sizeLabel = mb >= 1
+    ? `${mb.toFixed(1)} MB`
+    : `${Math.max(1, Math.round((s.bytes || 0) / 1024))} KB`;
+  const line1 = document.createElement("div");
+  line1.style.cssText = "color:#2c3e50;";
+  line1.textContent = `${s.count} 件 / ${sizeLabel}`;
+  wrap.appendChild(line1);
+
+  const btnDel = document.createElement("button");
+  btnDel.className = "backup-btn";
+  btnDel.style.cssText = "padding:1px 6px;font-size:10px;align-self:flex-start;";
+  btnDel.textContent = "🗑 サムネ削除";
+  btnDel.title = "このルートフォルダの取込用サムネを一括削除";
+  btnDel.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm(`「${rootPath}」配下の取込用サムネ ${s.count} 件（${sizeLabel}）を削除しますか？`)) return;
+    try {
+      await browser.runtime.sendMessage({ type: "DELETE_EXT_THUMBS_BY_ROOT", rootPath });
+      await _extRenderFolderList();  // 統計キャッシュを再ロードして再描画
+    } catch (err) {
+      showStatus(`❌ サムネ削除失敗: ${err.message || ""}`, true);
+    }
+  });
+  wrap.appendChild(btnDel);
+  return wrap;
+}
+
+/** 行の操作ボタン（ステータス別に切替） */
+function _extBuildRowActions(item, targetPath, subfolderPath, statusInfo) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display:flex;gap:3px;flex-wrap:wrap;";
+  const { kind, session } = statusInfo;
+
+  // 完了行のみ：👁 閲覧
+  if (kind === "done" && session) {
+    const btnView = document.createElement("button");
+    btnView.className = "backup-btn";
+    btnView.style.cssText = "padding:2px 6px;font-size:10px;background:#e8f5e9;border-color:#a5d6a7;";
+    btnView.title = "完了セッションを閲覧モードで開く";
+    btnView.textContent = "👁 閲覧";
+    btnView.addEventListener("click", () => _extOpenB1(session));
+    wrap.appendChild(btnView);
+  }
+
+  // 🖼 1枚ずつ（進行中は再開、完了は再取込、未開始は ▶ 開始）
+  const btnPer = document.createElement("button");
+  btnPer.className = "backup-btn";
+  btnPer.style.cssText = "padding:2px 6px;font-size:10px;background:#e3f2fd;border-color:#90caf9;";
+  if (kind === "notstarted") {
+    btnPer.textContent = "▶ 開始";
+    btnPer.title = "このフォルダで 1 枚ずつ取り込みを開始";
+  } else if (kind === "inprogress") {
+    btnPer.textContent = "🖼 1枚ずつ";
+    btnPer.title = "進行中セッションを再開";
+  } else {
+    btnPer.textContent = "🖼 1枚ずつ";
+    btnPer.title = "このフォルダで 1 枚ずつ取り込み（再取込）";
+  }
+  btnPer.addEventListener("click", () => {
+    const rPer = document.getElementById("ext-mode-per-item");
+    if (rPer && !rPer.checked) { rPer.checked = true; rPer.dispatchEvent(new Event("change")); }
+    if (kind === "inprogress" && session) {
+      _extOpenB1(session);
+    } else {
+      _extStartSessionFromFolderList(item, targetPath, subfolderPath);
+    }
+  });
+  wrap.appendChild(btnPer);
+
+  // 🗑 リストから削除
+  const btnDel = document.createElement("button");
+  btnDel.className = "backup-btn";
+  btnDel.style.cssText = "padding:2px 6px;font-size:10px;";
+  btnDel.title = "リストから削除";
+  btnDel.textContent = "🗑";
+  btnDel.addEventListener("click", async () => {
+    const label = subfolderPath || item.rootPath;
+    if (!confirm(`「${label}」をリストから削除しますか？`)) return;
+    if (item.mode === "single") {
+      _extFolderList = _extFolderList.filter(f => f.id !== item.id);
+      _extFlSelectedKeys.delete(_extFlRowKey(item.id, null));
+    } else if (item.mode === "subfolders") {
+      item.subfolders = (item.subfolders || []).filter(s => s.path !== subfolderPath);
+      _extFlSelectedKeys.delete(_extFlRowKey(item.id, subfolderPath));
+      if (item.subfolders.length === 0) {
+        _extFolderList = _extFolderList.filter(f => f.id !== item.id);
+      }
+    }
+    await _extFlSave();
+    await _extRenderFolderList();
+  });
+  wrap.appendChild(btnDel);
+  return wrap;
+}
+
+/**
+ * v1.22.0 のフォルダリスト描画を v1.25.0 GROUP-12-merge 向けに書き換え：
+ * ☐ / 状態 / フォルダパス / 操作 / 進捗 / サムネ の 6 列で、セッション進捗と
+ * 外部取り込みサムネ統計を同一行に統合表示する。
+ */
+async function _extRenderFolderList() {
   const tbody  = document.getElementById("ext-fl-tbody");
   const emptyEl = document.getElementById("ext-fl-empty");
   if (!tbody) return;
+
+  // 描画前にサムネ統計キャッシュを最新化（単一 storage.local.get、コスト軽微）
+  try {
+    const r = await browser.storage.local.get("externalImportThumbStats");
+    _extThumbStatsCache = r.externalImportThumbStats || {};
+  } catch { _extThumbStatsCache = {}; }
+
   tbody.innerHTML = "";
   if (_extFolderList.length === 0) {
     if (emptyEl) emptyEl.style.display = "";
@@ -5373,7 +5599,7 @@ function _extRenderFolderList() {
   }
   if (emptyEl) emptyEl.style.display = "none";
 
-  // 共通: 選択チェック描画
+  // 選択チェック
   const makeSelectCb = (key) => {
     const cb = document.createElement("input");
     cb.type = "checkbox";
@@ -5386,154 +5612,89 @@ function _extRenderFolderList() {
     return cb;
   };
 
-  // 共通: 行操作ボタン群（個別行の 📦 / 📥 / 🗑）
-  const makeRowActions = (item, targetPath, subfolderPath) => {
-    const wrap = document.createElement("div");
-    wrap.style.cssText = "display:flex;gap:3px;flex-wrap:wrap;";
+  // 6 列行ビルダー（single / subfolder 個別行共用）
+  const buildRow = (item, targetPath, subfolderPath, opts = {}) => {
+    const key = subfolderPath ? _extFlRowKey(item.id, subfolderPath) : _extFlRowKey(item.id, null);
+    const tr = document.createElement("tr");
 
-    const btnBatch = document.createElement("button");
-    btnBatch.className = "backup-btn";
-    btnBatch.style.cssText = "padding:2px 6px;font-size:10px;background:#e8f5e9;border-color:#a5d6a7;";
-    btnBatch.title = "このフォルダだけ一括取り込み";
-    btnBatch.textContent = "📦 一括取り込み";
-    btnBatch.addEventListener("click", async () => {
-      const rBatch = document.getElementById("ext-mode-batch");
-      if (rBatch && !rBatch.checked) { rBatch.checked = true; rBatch.dispatchEvent(new Event("change")); }
-      await _extScanMultiRootForBatch([{ folderListItem: item, rootPath: item.rootPath, subfolderPath }]);
-    });
+    const td0 = document.createElement("td");
+    td0.style.cssText = "padding:5px 4px;border:1px solid #e0e0e0;text-align:center;vertical-align:top;";
+    td0.appendChild(makeSelectCb(key));
+    tr.appendChild(td0);
 
-    const btnPer = document.createElement("button");
-    btnPer.className = "backup-btn";
-    btnPer.style.cssText = "padding:2px 6px;font-size:10px;background:#e3f2fd;border-color:#90caf9;";
-    btnPer.title = "このフォルダだけ1枚ずつ取り込み";
-    btnPer.textContent = "📥 1枚ずつ取り込み";
-    btnPer.addEventListener("click", () => {
-      const rPer = document.getElementById("ext-mode-per-item");
-      if (rPer && !rPer.checked) { rPer.checked = true; rPer.dispatchEvent(new Event("change")); }
-      _extStartSessionFromFolderList(item, targetPath, subfolderPath);
-    });
+    const statusInfo = _extDetermineStatus(targetPath);
 
-    const btnDel = document.createElement("button");
-    btnDel.className = "backup-btn";
-    btnDel.style.cssText = "padding:2px 6px;font-size:10px;";
-    btnDel.title = "削除";
-    btnDel.textContent = "🗑 リストから削除";
-    btnDel.addEventListener("click", async () => {
-      const label = subfolderPath || item.rootPath;
-      if (!confirm(`「${label}」をリストから削除しますか？`)) return;
-      if (item.mode === "single") {
-        _extFolderList = _extFolderList.filter(f => f.id !== item.id);
-        _extFlSelectedKeys.delete(_extFlRowKey(item.id, null));
-      } else if (item.mode === "subfolders") {
-        item.subfolders = (item.subfolders || []).filter(s => s.path !== subfolderPath);
-        _extFlSelectedKeys.delete(_extFlRowKey(item.id, subfolderPath));
-        if (item.subfolders.length === 0) {
-          _extFolderList = _extFolderList.filter(f => f.id !== item.id);
-        }
-      }
-      await _extFlSave();
-      _extRenderFolderList();
-    });
+    const td1 = document.createElement("td");
+    td1.style.cssText = "padding:5px 6px;border:1px solid #e0e0e0;text-align:center;vertical-align:top;";
+    td1.appendChild(_extBuildStatusBadge(statusInfo.kind, statusInfo.label));
+    tr.appendChild(td1);
 
-    wrap.appendChild(btnBatch);
-    wrap.appendChild(btnPer);
-    wrap.appendChild(btnDel);
-    return wrap;
+    const td2 = document.createElement("td");
+    td2.style.cssText = `padding:5px 8px;border:1px solid #e0e0e0;word-break:break-all;vertical-align:top;${opts.indent ? "padding-left:24px;" : ""}`;
+    td2.textContent = targetPath;
+    if (_extFlIsCompleted(targetPath) && statusInfo.kind !== "done") {
+      // 現在「完了」扱いでない（セッション途中 or 未開始）で、過去完了履歴に当たる場合のみ追記
+      const badge = document.createElement("span");
+      badge.style.cssText = "margin-left:6px;font-size:10px;color:#fff;background:#e67e22;padding:1px 6px;border-radius:8px;";
+      badge.textContent = "過去に完了";
+      td2.appendChild(badge);
+    }
+    tr.appendChild(td2);
+
+    const td3 = document.createElement("td");
+    td3.style.cssText = "padding:5px 6px;border:1px solid #e0e0e0;vertical-align:top;";
+    td3.appendChild(_extBuildRowActions(item, targetPath, subfolderPath, statusInfo));
+    tr.appendChild(td3);
+
+    const td4 = document.createElement("td");
+    td4.style.cssText = "padding:5px 6px;border:1px solid #e0e0e0;vertical-align:top;";
+    td4.appendChild(_extBuildProgressCell(statusInfo.session));
+    tr.appendChild(td4);
+
+    const td5 = document.createElement("td");
+    td5.style.cssText = "padding:5px 6px;border:1px solid #e0e0e0;vertical-align:top;";
+    td5.appendChild(_extBuildThumbCell(targetPath));
+    tr.appendChild(td5);
+
+    return tr;
   };
 
   for (const item of _extFolderList) {
     if (item.mode === "single") {
-      const key = _extFlRowKey(item.id, null);
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:center;"></td>
-        <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:center;"></td>
-        <td style="padding:5px 8px;border:1px solid #e0e0e0;word-break:break-all;"></td>
-        <td style="padding:5px 8px;border:1px solid #e0e0e0;"></td>`;
-      const tds = tr.querySelectorAll("td");
-      // 選択
-      tds[0].appendChild(makeSelectCb(key));
-      // 完了
-      const cbDone = document.createElement("input");
-      cbDone.type = "checkbox";
-      cbDone.checked = !!item.done;
-      cbDone.addEventListener("change", async () => {
-        item.done = cbDone.checked;
-        await _extFlSave();
-      });
-      tds[1].appendChild(cbDone);
-      // パス
-      tds[2].textContent = item.rootPath;
-      if (_extFlIsCompleted(item.rootPath)) {
-        const badge = document.createElement("span");
-        badge.style.cssText = "margin-left:6px;font-size:10px;color:#fff;background:#e67e22;padding:1px 6px;border-radius:8px;";
-        badge.textContent = "過去に完了";
-        tds[2].appendChild(badge);
-      }
-      // 操作
-      tds[3].appendChild(makeRowActions(item, item.rootPath, null));
-      tbody.appendChild(tr);
-
+      tbody.appendChild(buildRow(item, item.rootPath, null));
     } else if (item.mode === "subfolders") {
-      // グループヘッダ行
+      // グループヘッダ（6 列 colspan）
       const trH = document.createElement("tr");
       trH.style.background = "#f9fbfd";
-      trH.innerHTML = `
-        <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:center;color:#888;font-size:11px;">―</td>
-        <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:center;color:#888;font-size:11px;">―</td>
-        <td style="padding:5px 8px;border:1px solid #e0e0e0;word-break:break-all;color:#2c3e50;font-weight:600;"></td>
-        <td style="padding:5px 8px;border:1px solid #e0e0e0;"></td>`;
-      const tdsH = trH.querySelectorAll("td");
-      tdsH[2].textContent = item.rootPath + " （サブフォルダ別）";
+      const tdH = document.createElement("td");
+      tdH.colSpan = 6;
+      tdH.style.cssText = "padding:5px 8px;border:1px solid #e0e0e0;word-break:break-all;color:#2c3e50;font-weight:600;";
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:8px;";
+      const label = document.createElement("span");
+      label.textContent = item.rootPath + " （サブフォルダ別）";
+      label.style.flex = "1";
+      row.appendChild(label);
       const btnDelH = document.createElement("button");
       btnDelH.className = "backup-btn";
       btnDelH.style.cssText = "padding:2px 8px;font-size:11px;";
       btnDelH.textContent = "🗑 グループ削除";
       btnDelH.addEventListener("click", async () => {
         if (!confirm("このサブフォルダグループを削除しますか？")) return;
-        // 関連する選択キーをクリーンアップ
         for (const s of (item.subfolders || [])) {
           _extFlSelectedKeys.delete(_extFlRowKey(item.id, s.path));
         }
         _extFolderList = _extFolderList.filter(f => f.id !== item.id);
         await _extFlSave();
-        _extRenderFolderList();
+        await _extRenderFolderList();
       });
-      tdsH[3].appendChild(btnDelH);
+      row.appendChild(btnDelH);
+      tdH.appendChild(row);
+      trH.appendChild(tdH);
       tbody.appendChild(trH);
 
       for (const sub of (item.subfolders || [])) {
-        const key = _extFlRowKey(item.id, sub.path);
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:center;"></td>
-          <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:center;"></td>
-          <td style="padding:5px 8px;border:1px solid #e0e0e0;word-break:break-all;padding-left:24px;"></td>
-          <td style="padding:5px 8px;border:1px solid #e0e0e0;"></td>`;
-        const tds = tr.querySelectorAll("td");
-        // 選択
-        tds[0].appendChild(makeSelectCb(key));
-        // 完了
-        const cbDone = document.createElement("input");
-        cbDone.type = "checkbox";
-        cbDone.checked = !!sub.done;
-        cbDone.addEventListener("change", async () => {
-          sub.done = cbDone.checked;
-          item.done = item.subfolders.every(s => s.done);
-          await _extFlSave();
-        });
-        tds[1].appendChild(cbDone);
-        // パス
-        tds[2].textContent = sub.path;
-        if (_extFlIsCompleted(sub.path)) {
-          const badge = document.createElement("span");
-          badge.style.cssText = "margin-left:6px;font-size:10px;color:#fff;background:#e67e22;padding:1px 6px;border-radius:8px;";
-          badge.textContent = "過去に完了";
-          tds[2].appendChild(badge);
-        }
-        // 操作
-        tds[3].appendChild(makeRowActions(item, sub.path, sub.path));
-        tbody.appendChild(tr);
+        tbody.appendChild(buildRow(item, sub.path, sub.path, { indent: true }));
       }
     }
   }
@@ -6402,6 +6563,10 @@ async function _extB1SaveAndNext() {
   // queue を更新
   cur.status  = "done";
   cur.entryId = entry.id;
+  // v1.25.0 GROUP-7-b-save-reuse（案 A）:
+  //   サムネ一覧モーダルで再表示する際、保存済みアイテムは既存 `thumbnails` IDB から
+  //   流用するため、queue 側にも thumbId を記録しておく（saveHistory 全走査を避ける）
+  cur.thumbId = thumbId;
   // v1.23.0: 絞り込み結果内で次の該当アイテムへ進む
   _extB1AdvanceCursorInFiltered(session);
   session.updatedAt = new Date().toISOString();
@@ -6727,34 +6892,87 @@ function _extB1RefreshThumbCardStatus(card, session, qIdx, q) {
   }
 }
 
-/** v1.24.0 GROUP-10-a / GROUP-10-c: サムネフェッチ発射（セマフォ越し）
- *  img.dataset.fetching で多重発射防止（再発射経路での重複防止）
+/** v1.24.0 GROUP-10-a / GROUP-10-c / v1.25.0 GROUP-7-b-save-reuse + b-modal-cache:
+ *  サムネフェッチ発射（多段フォールバック + セマフォ越し）
+ *
+ *  呼び出し側は「カード img の src を埋める」という目的だけ持ち、どのソースから
+ *  取得したかを意識しない（v1.25.0 の「一本化」方針。dataUrl キャッシュ Map は追加せず、
+ *  v1.24.0 の DOM キャッシュ + 本関数の多段フォールバックで事足りる）。
+ *
+ *  フォールバック順：
+ *    ① save-reuse：保存済みアイテム（`q.thumbId` あり）は既存 `thumbnails` IDB から取得
+ *    ② ext-persist：外部取り込み用 `externalImportThumbs` IDB に過去取得済のサムネがあれば流用
+ *    ③ Native fetch：①②いずれもヒットしなければ GENERATE_THUMBS_BATCH / READ_LOCAL_IMAGE_BASE64
+ *      （セマフォで同時 5 件に制限、GROUP-10-c）
+ *    ④ Native fetch 成功後 → ext-persist に put（Q3=A：モーダル閲覧時のみ蓄積）
+ *
+ *  img.dataset.fetching で多重発射防止（再発射経路での重複防止、GROUP-10-a）
  */
 async function _extB1FireThumbFetch(img, q) {
   if (!img || img.dataset.fetching) return;
   img.dataset.fetching = "1";
-  await _extB1SemaAcquire();
   try {
-    const lc = (q.filePath || "").toLowerCase();
-    if (lc.endsWith(".gif")) {
-      const r = await browser.runtime.sendMessage({
-        type:  "GENERATE_THUMBS_BATCH",
-        paths: [q.filePath],
-      });
-      const b64  = r?.thumbs?.[q.filePath];
-      const mime = r?.thumbMimes?.[q.filePath] || "image/gif";
-      if (b64) img.src = `data:${mime};base64,${b64}`;
-      return;
+    // ① save-reuse（GROUP-7-b-save-reuse）：q.thumbId あれば saveHistory 用 IDB から取得
+    if (q.thumbId) {
+      try {
+        const r = await browser.runtime.sendMessage({
+          type:    "GET_THUMB_DATA_URL",
+          thumbId: q.thumbId,
+        });
+        if (r?.dataUrl) { img.src = r.dataUrl; return; }
+      } catch (_) { /* 取得失敗時は次段へ */ }
     }
-    const res = await browser.runtime.sendMessage({
-      type:    "READ_LOCAL_IMAGE_BASE64",
-      path:    q.filePath,
-      maxSize: 180,
-    });
-    if (res?.ok && res.dataUrl) img.src = res.dataUrl;
+
+    // ② ext-persist（GROUP-7-b-ext-persist）：filePath キーで外部取り込み用 IDB を引く
+    try {
+      const r = await browser.runtime.sendMessage({
+        type:     "GET_EXT_THUMB",
+        filePath: q.filePath,
+      });
+      if (r?.ok && r.dataUrl) { img.src = r.dataUrl; return; }
+    } catch (_) { /* 次段へ */ }
+
+    // ③ Native fetch（セマフォ越し）：GIF は GENERATE_THUMBS_BATCH、非 GIF は READ_LOCAL_IMAGE_BASE64
+    await _extB1SemaAcquire();
+    let dataUrl = null;
+    try {
+      const lc = (q.filePath || "").toLowerCase();
+      if (lc.endsWith(".gif")) {
+        const r = await browser.runtime.sendMessage({
+          type:  "GENERATE_THUMBS_BATCH",
+          paths: [q.filePath],
+        });
+        const b64  = r?.thumbs?.[q.filePath];
+        const mime = r?.thumbMimes?.[q.filePath] || "image/gif";
+        if (b64) dataUrl = `data:${mime};base64,${b64}`;
+      } else {
+        const r = await browser.runtime.sendMessage({
+          type:    "READ_LOCAL_IMAGE_BASE64",
+          path:    q.filePath,
+          maxSize: 180,
+        });
+        if (r?.ok && r.dataUrl) dataUrl = r.dataUrl;
+      }
+    } finally {
+      _extB1SemaRelease();
+    }
+
+    if (!dataUrl) return;
+    img.src = dataUrl;
+
+    // ④ Q3=A: モーダル閲覧時の Native fetch 成功時のみ ext-persist に put
+    //    rootPath はキュー項目の sourceRoot（v1.22.0 以降、スキャン結果に付与）から解決
+    const rootPath = q.sourceRoot || "";
+    if (rootPath) {
+      browser.runtime.sendMessage({
+        type:     "SAVE_EXT_THUMB",
+        filePath: q.filePath,
+        dataUrl,
+        rootPath,
+      }).catch(() => { /* put 失敗は無視（描画は既に完了している） */ });
+    }
   } catch (_) { /* 無視 */ }
   finally {
-    _extB1SemaRelease();
     delete img.dataset.fetching;
   }
 }

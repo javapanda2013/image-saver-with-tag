@@ -11,6 +11,13 @@
       font-family: "Segoe UI", -apple-system, sans-serif;
       font-size: 13px; color: #1a1a1a; background: #f7f9fc;
     }
+    /* v1.25.0 GROUP-12-width: 外部取り込みタブ表示時のみ body.wide-tab を付与し、
+       ビューポート幅に応じて段階的に max-width を拡張（C 案採用）。
+       breakpoints: 1000 / 1280 / 1600 px、max-width: 720 / 960 / 1200 / 1480 px */
+    body.wide-tab { max-width: 720px; }
+    @media (min-width: 1000px) { body.wide-tab { max-width: 960px; } }
+    @media (min-width: 1280px) { body.wide-tab { max-width: 1200px; } }
+    @media (min-width: 1600px) { body.wide-tab { max-width: 1480px; } }
     .app-header {
       display: flex; align-items: center; gap: 8px; padding: 12px 16px;
       background: #fff; border-bottom: 1px solid #e0e0e0;
@@ -1215,13 +1222,17 @@
           <button id="ext-fl-bulk-delete"   class="backup-btn" style="padding:2px 10px;font-size:11px;">🗑 選択を削除</button>
           <span id="ext-fl-bulk-count" style="font-size:11px;color:#666;margin-left:auto;"></span>
         </div>
-        <table id="ext-fl-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        <!-- v1.25.0 GROUP-12-merge: 取り込み予定フォルダリストとセッション一覧を統合
+             列順：☐ / 状態 / フォルダパス / 操作 / 進捗 / サムネ -->
+        <table id="ext-fl-table" style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;">
           <thead>
             <tr style="background:#f5f5f5;">
-              <th style="padding:5px 8px;text-align:center;border:1px solid #e0e0e0;width:36px;">☑</th>
-              <th style="padding:5px 8px;text-align:left;border:1px solid #e0e0e0;width:60px;">完了</th>
-              <th style="padding:5px 8px;text-align:left;border:1px solid #e0e0e0;">フォルダ</th>
-              <th style="padding:5px 8px;text-align:left;border:1px solid #e0e0e0;width:230px;">操作</th>
+              <th style="padding:5px 4px;text-align:center;border:1px solid #e0e0e0;width:28px;">☑</th>
+              <th style="padding:5px 6px;text-align:center;border:1px solid #e0e0e0;width:68px;">状態</th>
+              <th style="padding:5px 8px;text-align:left;border:1px solid #e0e0e0;">フォルダパス</th>
+              <th style="padding:5px 6px;text-align:left;border:1px solid #e0e0e0;width:230px;">操作</th>
+              <th style="padding:5px 6px;text-align:left;border:1px solid #e0e0e0;width:200px;">進捗</th>
+              <th style="padding:5px 6px;text-align:left;border:1px solid #e0e0e0;width:140px;">サムネ</th>
             </tr>
           </thead>
           <tbody id="ext-fl-tbody"></tbody>
@@ -1399,18 +1410,12 @@
 
       <!-- A. 取り込み予定フォルダリストは v1.22.0 で共通領域へ移設（このタブ上部） -->
 
-      <!-- B. セッション一覧 -->
-      <div>
-        <div class="section-title">セッション一覧</div>
-        <div class="backup-section">
-          <div style="font-size:12px;color:#555;margin-bottom:8px;">
-            進行中・中断中の取り込みセッションです。複数を並行で保持できます。
-          </div>
-          <div id="ext-sessions-list"></div>
-          <div id="ext-sessions-empty" style="font-size:12px;color:#888;padding:8px;text-align:center;">
-            アクティブなセッションはありません。
-          </div>
-        </div>
+      <!-- B. セッション一覧
+           v1.25.0 GROUP-12-merge: 統合テーブル（ext-fl-table）側に「状態／進捗」列として
+           吸収。独立セクションは不要のため非表示化（レガシー要素は JS 互換のため残置）。 -->
+      <div style="display:none;">
+        <div id="ext-sessions-list"></div>
+        <div id="ext-sessions-empty"></div>
       </div>
 
       <!-- C. 完了ルートフォルダ履歴（折りたたみ） -->

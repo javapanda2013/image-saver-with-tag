@@ -206,6 +206,15 @@ browser.runtime.onMessage.addListener(async (message) => {
       return exportIdbThumbs();
     case "IMPORT_IDB_THUMBS":
       return importIdbThumbs(message.thumbs);
+    // v1.25.0 GROUP-7-b-ext-persist: 外部取り込み用サムネ永続 IDB ストア
+    case "SAVE_EXT_THUMB":
+      return saveExtThumb(message.filePath, message.dataUrl, message.rootPath);
+    case "GET_EXT_THUMB": {
+      const dataUrl = await getExtThumb(message.filePath);
+      return { ok: true, dataUrl };
+    }
+    case "DELETE_EXT_THUMBS_BY_ROOT":
+      return deleteExtThumbsByRoot(message.rootPath);
     case "SCAN_EXTERNAL_IMAGES":
       return sendNative({
         cmd:        "SCAN_EXTERNAL_IMAGES",
@@ -1243,7 +1252,17 @@ function _assembleBlobFromChunksB64(chunksB64, mime) {
 
 const IDB_NAME    = "ImageSaverThumbDB";
 const IDB_STORE   = "thumbnails";
-const IDB_VERSION = 1;
+// v1.25.0 GROUP-7-b-ext-persist: 外部取り込み用サムネ永続ストアを新設。
+//   既存 `thumbnails` (saveHistory 用、keyPath: id) とは別物。
+//   用途：未保存の外部取り込みアイテムのサムネを filePath で永続化し、
+//         セッション再開・モーダル再オープン時の再生成コストを削減する。
+//   構造：{ filePath: string(PK), blob: Blob, rootPath: string, bytes: number, savedAt: ISO }
+//   インデックス：`rootPath` でルートフォルダ単位の一括削除を効率化
+const IDB_EXT_STORE = "externalImportThumbs";
+// v1.25.0: IDB_VERSION を 1→2 にインクリメント（新ストア追加のため）。
+//   既存ユーザーは初回起動時に onupgradeneeded が発火し、既存 `thumbnails`
+//   は保持したまま `externalImportThumbs` が追加される。
+const IDB_VERSION = 2;
 
 function openThumbDB() {
   return new Promise((resolve, reject) => {
@@ -1252,6 +1271,11 @@ function openThumbDB() {
       const db = e.target.result;
       if (!db.objectStoreNames.contains(IDB_STORE)) {
         db.createObjectStore(IDB_STORE, { keyPath: "id" });
+      }
+      // v1.25.0 GROUP-7-b-ext-persist
+      if (!db.objectStoreNames.contains(IDB_EXT_STORE)) {
+        const extStore = db.createObjectStore(IDB_EXT_STORE, { keyPath: "filePath" });
+        extStore.createIndex("rootPath", "rootPath", { unique: false });
       }
     };
     req.onsuccess = (e) => resolve(e.target.result);
@@ -1386,6 +1410,165 @@ async function deleteThumbFromIDB(thumbId) {
       tx.oncomplete = () => resolve();
     });
   } catch { /* 無視 */ }
+}
+
+// ----------------------------------------------------------------
+// v1.25.0 GROUP-7-b-ext-persist: 外部取り込み用サムネ永続 IDB
+// ----------------------------------------------------------------
+
+/** data URL を Blob に変換するヘルパー（saveThumbToIDB 系と用途を揃える） */
+function _dataUrlToBlob(dataUrl) {
+  const [meta, b64] = (dataUrl || "").split(",");
+  const mime = (meta?.match(/:(.*?);/) || [])[1] || "image/jpeg";
+  const bin  = atob(b64 || "");
+  const buf  = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return new Blob([buf], { type: mime });
+}
+
+/** Blob を data URL 文字列に変換（BG では FileReader が使えないため btoa 経由） */
+async function _blobToDataUrl(blob) {
+  const ab    = await blob.arrayBuffer();
+  const bytes = new Uint8Array(ab);
+  let binary  = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const type = blob.type || "image/jpeg";
+  return `data:${type};base64,` + btoa(binary);
+}
+
+/** storage.local.externalImportThumbStats を {count, bytes} で差分更新 */
+async function _updateExtStats(rootPath, deltaCount, deltaBytes) {
+  if (!rootPath) return;
+  const { externalImportThumbStats } = await browser.storage.local.get("externalImportThumbStats");
+  const stats = externalImportThumbStats || {};
+  const cur   = stats[rootPath] || { count: 0, bytes: 0 };
+  cur.count = Math.max(0, cur.count + deltaCount);
+  cur.bytes = Math.max(0, cur.bytes + deltaBytes);
+  if (cur.count === 0 && cur.bytes === 0) {
+    delete stats[rootPath];
+  } else {
+    stats[rootPath] = cur;
+  }
+  await browser.storage.local.set({ externalImportThumbStats: stats });
+}
+
+/**
+ * 外部取り込みサムネを IDB `externalImportThumbs` に保存（upsert）。
+ * 既存エントリがあれば bytes 差分だけ stats に反映、なければ count+1 / bytes+new。
+ * @returns {{ ok: true, bytes: number } | { ok: false, error: string }}
+ */
+async function saveExtThumb(filePath, dataUrl, rootPath) {
+  try {
+    if (!filePath || !dataUrl) return { ok: false, error: "filePath/dataUrl は必須" };
+    const blob = _dataUrlToBlob(dataUrl);
+    const db   = await openThumbDB();
+
+    // 既存レコードを先読みして stats 差分を決める
+    const existing = await new Promise((resolve, reject) => {
+      const tx    = db.transaction(IDB_EXT_STORE, "readonly");
+      const store = tx.objectStore(IDB_EXT_STORE);
+      const req   = store.get(filePath);
+      req.onsuccess = (e) => resolve(e.target.result || null);
+      req.onerror   = (e) => reject(e.target.error);
+    });
+
+    await new Promise((resolve, reject) => {
+      const tx    = db.transaction(IDB_EXT_STORE, "readwrite");
+      const store = tx.objectStore(IDB_EXT_STORE);
+      store.put({
+        filePath,
+        blob,
+        rootPath: rootPath || "",
+        bytes:    blob.size,
+        savedAt:  new Date().toISOString(),
+      });
+      tx.oncomplete = () => resolve();
+      tx.onerror    = (e) => reject(e.target.error);
+    });
+
+    // stats 更新（同一 rootPath 前提。rootPath 変更は通常起きない想定）
+    const deltaCount = existing ? 0 : 1;
+    const deltaBytes = existing ? (blob.size - (existing.bytes || 0)) : blob.size;
+    await _updateExtStats(rootPath || existing?.rootPath || "", deltaCount, deltaBytes);
+
+    return { ok: true, bytes: blob.size };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * 外部取り込みサムネを filePath で取得して data URL で返す。
+ * 無ければ null を返す（呼び出し側は他ソースへフォールバック）。
+ */
+async function getExtThumb(filePath) {
+  if (!filePath) return null;
+  try {
+    const db = await openThumbDB();
+    const record = await new Promise((resolve, reject) => {
+      const tx    = db.transaction(IDB_EXT_STORE, "readonly");
+      const store = tx.objectStore(IDB_EXT_STORE);
+      const req   = store.get(filePath);
+      req.onsuccess = (e) => resolve(e.target.result || null);
+      req.onerror   = (e) => reject(e.target.error);
+    });
+    if (!record || !record.blob) return null;
+    return await _blobToDataUrl(record.blob);
+  } catch (err) {
+    addLog("WARN", "外部取り込みサムネ取得失敗", err.message);
+    return null;
+  }
+}
+
+/**
+ * 指定 rootPath 配下の全外部取り込みサムネを一括削除し、stats からも当該エントリを除去。
+ * GROUP-7-b-ui の🗑削除ボタンから呼ばれる想定。
+ * @returns {{ ok: true, deleted: number } | { ok: false, error: string }}
+ */
+async function deleteExtThumbsByRoot(rootPath) {
+  try {
+    if (!rootPath) return { ok: false, error: "rootPath は必須" };
+    const db = await openThumbDB();
+
+    // index "rootPath" で primary key を列挙
+    const keys = await new Promise((resolve, reject) => {
+      const tx    = db.transaction(IDB_EXT_STORE, "readonly");
+      const store = tx.objectStore(IDB_EXT_STORE);
+      const idx   = store.index("rootPath");
+      const req   = idx.getAllKeys(IDBKeyRange.only(rootPath));
+      req.onsuccess = (e) => resolve(e.target.result || []);
+      req.onerror   = (e) => reject(e.target.error);
+    });
+
+    if (keys.length === 0) {
+      // IDB 側に無くても stats 側に残骸があれば掃除
+      await _clearExtStatsEntry(rootPath);
+      return { ok: true, deleted: 0 };
+    }
+
+    await new Promise((resolve, reject) => {
+      const tx    = db.transaction(IDB_EXT_STORE, "readwrite");
+      const store = tx.objectStore(IDB_EXT_STORE);
+      for (const k of keys) store.delete(k);
+      tx.oncomplete = () => resolve();
+      tx.onerror    = (e) => reject(e.target.error);
+    });
+
+    await _clearExtStatsEntry(rootPath);
+    return { ok: true, deleted: keys.length };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/** stats から rootPath エントリを削除（count/bytes を 0 扱いにして clean up） */
+async function _clearExtStatsEntry(rootPath) {
+  const { externalImportThumbStats } = await browser.storage.local.get("externalImportThumbStats");
+  const stats = externalImportThumbStats || {};
+  if (stats[rootPath]) {
+    delete stats[rootPath];
+    await browser.storage.local.set({ externalImportThumbStats: stats });
+  }
 }
 
 /**

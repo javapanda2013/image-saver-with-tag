@@ -5,6 +5,43 @@
 
 ---
 
+## [1.25.0] - 2026-04-18
+
+### Added
+- **外部取り込み用サムネ永続 IDB ストア**（GROUP-7-b-ext-persist）
+  - `background.js` に新ストア `externalImportThumbs`（keyPath: `filePath`、インデックス `rootPath`）を新設。既存 `thumbnails`（saveHistory 用、keyPath: `id`）とは用途別物で、未保存の外部取り込みアイテムのサムネを永続化する。
+  - `IDB_VERSION` を 1 → 2 にインクリメント（onupgradeneeded で新ストア追加、既存 `thumbnails` は保持）。
+  - 新メッセージハンドラ：`SAVE_EXT_THUMB` / `GET_EXT_THUMB` / `DELETE_EXT_THUMBS_BY_ROOT`。put 時に `storage.local.externalImportThumbStats[rootPath] = {count, bytes}` を差分加算し、読み出しは storage 参照のみで即時表示（IDB 走査不要）。
+
+- **サムネ一覧モーダルの多段フォールバック取得**（GROUP-7-b-save-reuse + GROUP-7-b-modal-cache 一本化）
+  - `_extB1FireThumbFetch` を 3 層フォールバックへリファクタ。`q.thumbId` ある保存済みアイテムは既存 `thumbnails` IDB から取得（save-reuse）、なければ `externalImportThumbs` IDB から取得（ext-persist）、それでもなければ Native fetch（`GENERATE_THUMBS_BATCH` / `READ_LOCAL_IMAGE_BASE64`、セマフォ 5 件制限は v1.24.0 で既設）。
+  - Native fetch が成功した場合のみ `SAVE_EXT_THUMB` で `externalImportThumbs` に put（Q3=A：モーダル閲覧時のみ蓄積、スキャン時や保存時には蓄積しない）。
+  - dataUrl の追加 Map キャッシュは導入せず、v1.24.0 B-1(ア) のカード DOM キャッシュ（`_extB1ThumbsCardCache = Map<qIdx, cardElement>`）と本関数のフォールバックに一本化（`img.src` を DOM が保持＝実質 dataUrl 永続）。
+
+- **保存時の queue.thumbId 追記**（GROUP-7-b-save-reuse、案 A 採用）
+  - `_extB1SaveAndNext` 内で saveHistory エントリ生成後に `cur.thumbId` を同時記録し、後続のサムネ一覧モーダル描画で saveHistory 全走査を避ける。突合キーは queue 側に閉じる。
+
+- **外部取り込みタブの統合テーブル**（GROUP-12-merge + GROUP-12-width）
+  - 従来の「取り込み予定フォルダリスト」と「セッション一覧」を 1 テーブルに統合。1 行 = 1 rootPath の 1:1 関係（UI 側フィルタ、Q4=A）。
+  - 列順：☐ / 状態 / フォルダパス / 操作 / 進捗 / サムネ（列幅：28 / 68 / flex / 230 / 200 / 140 px）。
+  - 状態バッジ：進行中＝青（`#3498db`）／ 未開始＝グレー（`#95a5a6`）／ 完了＝緑（`#2ecc71`）／ 空＝オレンジ（`#e67e22`）。
+  - 進捗セル：「完了+スキップ / 総数（pct%）」→ 進捗バー（完＝緑／スキップ＝オレンジ、max-width 180px）→「完 N・skip M・残 P」。
+  - 行ボタン（ステータス別）：未開始＝〔▶ 開始〕〔🗑〕／ 進行中＝〔🖼 1枚ずつ〕〔🗑〕／ 完了＝〔👁 閲覧〕〔🖼 1枚ずつ〕〔🗑〕。「📦 一括取込」行ボタンは撤去（ワークフロー不成立のため）。
+  - 独立の「セッション一覧」セクションは非表示化（統合テーブル内に吸収）。既存 `_extSessions` 構造は温存（UI 側で最新 1 件に絞って表示）。
+
+- **レスポンシブ幅**（GROUP-12-width、C 案）
+  - 外部取り込みタブ表示時のみ `document.body` に `wide-tab` クラスを付与。ビューポート幅に応じて `max-width` を 720 → 960 → 1200 → 1480 px へ段階拡張（breakpoints：1000 / 1280 / 1600 px）。他タブでは従来通り 720 px 固定。
+
+- **外部取り込みサムネの件数／サイズ表示 ＋ ルート単位削除**（GROUP-7-b-ui）
+  - 統合テーブルの各行サムネ列に「N 件 / X.X MB」を表示（`externalImportThumbStats` 参照）。0 件の行は「—」表示。
+  - 行内の〔🗑 サムネ削除〕ボタンで当該 rootPath 配下のサムネを `externalImportThumbs` から一括削除＋ stats エントリも除去。確認ダイアログで件数／サイズを提示してから実行。
+
+### Changed
+- manifest.json: 1.24.2 → 1.25.0
+- native/image_saver.py は変更なし（version 1.10.0 据え置き、IDB 変更は JS 側のみ）
+
+---
+
 ## [1.24.2] - 2026-04-18
 
 ### Fixed
