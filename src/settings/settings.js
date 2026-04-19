@@ -4896,19 +4896,33 @@ async function _extFlSave() {
   await browser.storage.local.set({ extImportFolderList: _extFolderList });
 }
 
+/**
+ * v1.26.4 (BUG-tyfl-dup-import): フォルダパスの正規化共通関数。
+ * Windows パス差異（末尾 `\` の有無、`\\` 連続、`/` 混在、大小文字）を吸収する。
+ * 既存 `_extFlIsCompleted` 内のインライン `n` 関数と同じ仕様を共通化した。
+ */
+function _normalizeExtPath(p) {
+  return (p || "").replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+}
+
 function _extFlIsCompleted(rootPath) {
-  const n = (p) => (p || "").replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
-  return _extCompletedRoots.some(r => n(r.rootPath) === n(rootPath));
+  return _extCompletedRoots.some(r => _normalizeExtPath(r.rootPath) === _normalizeExtPath(rootPath));
 }
 
 async function _extFlAddSingle() {
   const inputEl = document.getElementById("ext-fl-path");
   const path    = (inputEl?.value || "").trim();
   if (!path) { showStatus("⚠️ フォルダパスを入力してください", true); return; }
-  // v1.26.3 (BUG-tyfl-dup-import): mode 問わず同一 rootPath を弾く。
-  // 旧実装は `f.mode === "single"` に限定しており、既にサブフォルダ選択で登録済みの
-  // 親フォルダを単体登録でも追加できてしまう片方向のチェック漏れがあった。
-  if (_extFolderList.some(f => (f.rootPath || "").toLowerCase() === path.toLowerCase())) {
+  // v1.26.4 (BUG-tyfl-dup-import): 正規化比較で重複を検出。以下すべてを弾く：
+  //   - any mode の既存 rootPath と一致（single↔single / single↔subfolders 親）
+  //   - subfolders モードの子パス（`subfolders[].path`）と一致（P2: 子パス重複）
+  // 旧 v1.26.3 は toLowerCase のみの比較で、末尾 `\` 等の差異を吸収しておらず
+  // 同じフォルダが別文字列扱いですり抜けるケースがあった。
+  const np = _normalizeExtPath(path);
+  if (_extFolderList.some(f =>
+    _normalizeExtPath(f.rootPath) === np ||
+    (f.mode === "subfolders" && (f.subfolders || []).some(sub => _normalizeExtPath(sub.path) === np))
+  )) {
     showStatus("⚠️ 既に登録されています", true);
     return;
   }
@@ -5103,11 +5117,23 @@ async function _extFlApplySubfolders() {
     return;
   }
   const parent = document.getElementById("ext-fl-picker-parent")?.textContent || "";
-  // v1.26.3 (BUG-tyfl-dup-import): 親フォルダが既に登録済み（mode 問わず）なら弾く。
-  // 旧実装は本関数に重複チェック自体が無く、単体登録済みの親フォルダに対して
-  // サブフォルダ選択から再登録できてしまう片方向のチェック漏れがあった。
-  if (_extFolderList.some(f => (f.rootPath || "").toLowerCase() === parent.toLowerCase())) {
+  // v1.26.4 (BUG-tyfl-dup-import): 正規化比較で 2 段チェック：
+  //   (1) 親フォルダが any mode の既存 rootPath と一致 → 弾く
+  //   (2) 選択した子パスが既存 rootPath（single）または他 subfolders の子と一致 → 弾く
+  const nparent = _normalizeExtPath(parent);
+  if (_extFolderList.some(f => _normalizeExtPath(f.rootPath) === nparent)) {
     showStatus("⚠️ この親フォルダは既に登録されています", true);
+    return;
+  }
+  const nSelected = selected.map(s => _normalizeExtPath(s.path));
+  const hit = nSelected.find(sp =>
+    _extFolderList.some(f =>
+      _normalizeExtPath(f.rootPath) === sp ||
+      (f.mode === "subfolders" && (f.subfolders || []).some(sub => _normalizeExtPath(sub.path) === sp))
+    )
+  );
+  if (hit) {
+    showStatus("⚠️ 選択したサブフォルダの一部が既に登録されています", true);
     return;
   }
   // 1行で subfolders を持つ形で登録（mode="subfolders"）

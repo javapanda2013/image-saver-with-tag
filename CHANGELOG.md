@@ -5,6 +5,23 @@
 
 ---
 
+## [1.26.4] - 2026-04-19
+
+### Fixed
+- **取り込み予定フォルダの二重登録チェックを正規化比較＋子パス対応に拡張**（BUG-tyfl-dup-import 徹底対応）
+  - v1.26.3 で追加した比較は `toLowerCase` のみの片手落ちで、末尾 `\` の有無・`\\` 連続・`/` 混在などのパス形式差で同一フォルダが別文字列扱いですり抜けるケースがあった。
+  - 対策：同ファイル内 `_extFlIsCompleted` が使っていた正規化ロジック（`[\\/]+` → `/` 統一、末尾 `/` 削除、小文字化）を `_normalizeExtPath` 共通関数に昇格し、両関数の判定に適用。
+  - 追加で **P2（子パス重複）** を塞ぐ：
+    - `_extFlAddSingle`：入力パスが既存 subfolders エントリの `subfolders[].path` と一致する場合もブロック
+    - `_extFlApplySubfolders`：選択した子パスのいずれかが既存 single エントリの `rootPath` または他 subfolders エントリの `subfolders[].path` と一致する場合もブロック
+  - これにより「same-parent 親衝突」「cross-mode 親衝突」「cross-mode 子パス衝突」のすべてが検出される。
+
+### Changed
+- manifest.json: 1.26.3 → 1.26.4
+- **native/image_saver.py は変更なし**（version 1.10.0 据え置き）
+
+---
+
 ## [1.26.3] - 2026-04-19
 
 ### Fixed
