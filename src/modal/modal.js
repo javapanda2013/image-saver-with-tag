@@ -1790,11 +1790,12 @@ function setupModalEvents(
   let historyFilterGifOnly = false; // v1.26.0: GIF のみ表示フィルター
   let _historyRenderGen = 0; // renderHistory() の世代番号（非同期競合による二重描画防止）
   let _histPage     = 0;   // 現在ページ（0始まり）
-  let _histPageSize = 100; // 1ページの表示件数
-  // ストレージから件数設定を非同期で読み込む
-  browser.storage.local.get("modalHistoryPageSize").then(({ modalHistoryPageSize }) => {
-    _histPageSize = modalHistoryPageSize || 100;
-  }).catch(() => {});
+  let _histPageSize = 100; // 1ページの表示件数（初期値、storage.get で上書き）
+  // v1.26.2: ページ内ファーストビュー先行描画・裏読み込みの定数
+  const _HIST_INITIAL_BATCH_SIZE = 6;  // 初期同期描画の件数（グループ表示時は「グループ数」基準）
+  const _HIST_BG_CHUNK_SIZE      = 3;  // requestIdleCallback 1 回あたりの追加描画件数
+  // ※ modalHistoryPageSize の storage 読込は DOMContentLoaded 末尾の初回 renderHistory() 呼出で
+  //   await 扱いするため、ここでの重複 .then() は削除（race condition の原因だった）
 
   // 絞り込み入力欄の制御
   const historyFilterWrap        = document.getElementById("history-filter-wrap");
@@ -2138,14 +2139,11 @@ function setupModalEvents(
       // 古い世代の呼び出しは描画しない（二重描画防止）
       if (gen !== _historyRenderGen) return;
       const mode = historyDisplayMode || "normal";
-      if (mode === "group") {
-        _renderHistoryGrouped(list, pageSlice);
-      } else {
-        _renderHistoryNormal(list, pageSlice);
-      }
+      // v1.26.2: 初期 6 件同期描画＋残りは requestIdleCallback で裏描画
+      _renderHistoryChunked(list, pageSlice, mode, gen);
     }).catch(() => {
       if (gen !== _historyRenderGen) return;
-      _renderHistoryNormal(list, pageSlice);
+      _renderHistoryChunked(list, pageSlice, "normal", gen);
     });
   }
 
@@ -2211,16 +2209,8 @@ function setupModalEvents(
     });
   }
 
-  /** 通常表示（従来）*/
-  function _renderHistoryNormal(list, filtered) {
-    for (const entry of filtered) {
-      const item = _buildHistoryItem(entry, [entry], filtered);
-      list.appendChild(item);
-    }
-  }
-
-  /** グループ表示：同一 sessionId をまとめて1アイテムに */
-  function _renderHistoryGrouped(list, filtered) {
+  /** v1.26.2: 同一 sessionId でまとめたグループ配列を計算（描画は別関数） */
+  function _computeHistoryGroups(filtered) {
     const groups = [];
     const groupMap = new Map();
     for (const entry of filtered) {
@@ -2235,59 +2225,104 @@ function setupModalEvents(
         groups.push({ sessionId: null, items: [entry] });
       }
     }
+    return groups;
+  }
 
-    for (const group of groups) {
-      if (!group.sessionId || group.items.length === 1) {
-        list.appendChild(_buildHistoryItem(group.items[0], [group.items[0]], filtered));
-      } else {
-        const first = group.items.at(-1); // 最初に保存した画像（unshiftで末尾が古い）
+  /** v1.26.2: 1 グループを list に append（単独エントリ or グループラッパー）*/
+  function _appendHistoryGroupItem(list, group, filtered) {
+    if (!group.sessionId || group.items.length === 1) {
+      list.appendChild(_buildHistoryItem(group.items[0], [group.items[0]], filtered));
+      return;
+    }
+    const first = group.items.at(-1); // 最初に保存した画像（unshiftで末尾が古い）
 
-        // グループ全体ラッパー（通常フローに乗る flex-column コンテナ）
-        const wrapper = document.createElement("div");
-        wrapper.className = "history-group-wrapper";
+    // グループ全体ラッパー（通常フローに乗る flex-column コンテナ）
+    const wrapper = document.createElement("div");
+    wrapper.className = "history-group-wrapper";
 
-        // 先頭タイル：_buildHistoryItem で通常タイルとして生成・幅を固定
-        const orderedGroup = [...group.items].reverse(); // 古い順
-        const item = _buildHistoryItem(first, orderedGroup, filtered);
-        item.classList.add("history-item-group-card");
-        item.style.cssText += ";border-color:#e67e22;box-sizing:border-box;";
+    // 先頭タイル：_buildHistoryItem で通常タイルとして生成・幅を固定
+    const orderedGroup = [...group.items].reverse(); // 古い順
+    const item = _buildHistoryItem(first, orderedGroup, filtered);
+    item.classList.add("history-item-group-card");
+    item.style.cssText += ";border-color:#e67e22;box-sizing:border-box;";
 
-        // 枚数バッジ
-        const badge = document.createElement("div");
-        badge.style.cssText = "position:absolute;top:4px;right:6px;z-index:2;font-size:10px;font-weight:700;" +
-          "background:#e67e22;color:#fff;padding:1px 7px;border-radius:10px;pointer-events:none;";
-        badge.textContent = `${group.items.length}枚`;
-        item.appendChild(badge);
+    // 枚数バッジ
+    const badge = document.createElement("div");
+    badge.style.cssText = "position:absolute;top:4px;right:6px;z-index:2;font-size:10px;font-weight:700;" +
+      "background:#e67e22;color:#fff;padding:1px 7px;border-radius:10px;pointer-events:none;";
+    badge.textContent = `${group.items.length}枚`;
+    item.appendChild(badge);
 
-        // 展開ボタン（ラッパーの直接子として配置・オーバーレイ外）
-        const expandBtn = document.createElement("button");
-        expandBtn.className = "history-group-expand-btn";
-        expandBtn.textContent = `▶ 展開（${group.items.length}枚）`;
+    // 展開ボタン（ラッパーの直接子として配置・オーバーレイ外）
+    const expandBtn = document.createElement("button");
+    expandBtn.className = "history-group-expand-btn";
+    expandBtn.textContent = `▶ 展開（${group.items.length}枚）`;
 
-        // 展開エリア（ラッパーの直接子として配置）
-        const childrenArea = document.createElement("div");
-        childrenArea.className = "history-group-children";
+    // 展開エリア（ラッパーの直接子として配置）
+    const childrenArea = document.createElement("div");
+    childrenArea.className = "history-group-children";
 
-        wrapper.appendChild(item);
-        wrapper.appendChild(expandBtn);
-        wrapper.appendChild(childrenArea);
+    wrapper.appendChild(item);
+    wrapper.appendChild(expandBtn);
+    wrapper.appendChild(childrenArea);
 
-        let expanded = false;
-        expandBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          expanded = !expanded;
-          childrenArea.style.display = expanded ? "flex" : "none";
-          expandBtn.textContent = expanded ? `▼ 折りたたむ` : `▶ 展開（${group.items.length}枚）`;
-          expandBtn.style.borderRadius = expanded ? "0" : "0 0 8px 8px";
-          if (expanded && childrenArea.childElementCount === 0) {
-            for (const sub of orderedGroup) {
-              childrenArea.appendChild(_buildHistoryItem(sub, orderedGroup, filtered, true));
-            }
-          }
-        });
-
-        list.appendChild(wrapper);
+    let expanded = false;
+    expandBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      expanded = !expanded;
+      childrenArea.style.display = expanded ? "flex" : "none";
+      expandBtn.textContent = expanded ? `▼ 折りたたむ` : `▶ 展開（${group.items.length}枚）`;
+      expandBtn.style.borderRadius = expanded ? "0" : "0 0 8px 8px";
+      if (expanded && childrenArea.childElementCount === 0) {
+        for (const sub of orderedGroup) {
+          childrenArea.appendChild(_buildHistoryItem(sub, orderedGroup, filtered, true));
+        }
       }
+    });
+
+    list.appendChild(wrapper);
+  }
+
+  /** v1.26.2: 初期 6 件を同期描画、残りを requestIdleCallback で裏描画する
+   *  - units: 描画単位（normal: entry、group: group）
+   *  - renderUnit: 1 単位を list に append する関数
+   *  - gen: _historyRenderGen のスナップショット。変化すれば中断 */
+  function _renderHistoryChunked(list, pageSlice, mode, gen) {
+    let units, renderUnit;
+    if (mode === "group") {
+      units = _computeHistoryGroups(pageSlice);
+      renderUnit = (g) => _appendHistoryGroupItem(list, g, pageSlice);
+    } else {
+      units = pageSlice;
+      renderUnit = (entry) => list.appendChild(_buildHistoryItem(entry, [entry], pageSlice));
+    }
+    // 初期バッチ同期
+    const initial = units.slice(0, _HIST_INITIAL_BATCH_SIZE);
+    for (const u of initial) renderUnit(u);
+    // 残り非同期
+    const remaining = units.slice(_HIST_INITIAL_BATCH_SIZE);
+    if (remaining.length > 0) {
+      _scheduleHistoryBgRender(gen, remaining, renderUnit);
+    }
+  }
+
+  /** v1.26.2: 残り件数を requestIdleCallback（なければ setTimeout 0）で段階的に描画。
+   *  各 chunk 実行前に _historyRenderGen を照合し、変わっていたら中断する。 */
+  function _scheduleHistoryBgRender(gen, units, renderUnit) {
+    if (gen !== _historyRenderGen) return;
+    const chunk = units.slice(0, _HIST_BG_CHUNK_SIZE);
+    const rest  = units.slice(_HIST_BG_CHUNK_SIZE);
+    const run = () => {
+      if (gen !== _historyRenderGen) return;
+      for (const u of chunk) renderUnit(u);
+      if (rest.length > 0) {
+        _scheduleHistoryBgRender(gen, rest, renderUnit);
+      }
+    };
+    if (typeof requestIdleCallback !== "undefined") {
+      requestIdleCallback(run);
+    } else {
+      setTimeout(run, 0);
     }
   }
 
@@ -2759,7 +2794,13 @@ function setupModalEvents(
     }, 0);
   }
 
-  renderHistory();
+  // v1.26.2: modalHistoryPageSize 読込を await 扱いで初回 renderHistory() の前に完了させる。
+  // 旧実装は storage.get と renderHistory() が別経路で走っており、初回のみ
+  // 設定値（20/50/100/200）を反映しないまま 100 件ベースで描画する race 状態があった。
+  browser.storage.local.get("modalHistoryPageSize").then(({ modalHistoryPageSize }) => {
+    if (modalHistoryPageSize) _histPageSize = modalHistoryPageSize;
+    renderHistory();
+  }).catch(() => renderHistory());
 
   // ================================================================
   // エクスプローラーで現在フォルダを開くボタン
