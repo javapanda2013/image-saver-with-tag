@@ -4688,11 +4688,12 @@ function setupModalEvents(
   }
 
   function showAuthorSuggestions(q) {
-    // v1.26.6 (BUG-modal-suggest-match): 未入力時は非表示、1 文字以上で前方一致（タグ入力と整合）
-    if (!q) { hideAuthorSuggestions(); return; }
-    const matches = allAuthors
-      .filter(a => tagMatches(a, q))
-      .filter(a => !selectedAuthors.includes(a));
+    // v1.26.7: 未入力時は全件表示、1 文字以上で前方一致（autocomplete 用途のため）
+    // タグ・サブタグ入力と同様、入力欄フォーカス中は候補を提示する UX に合わせる
+    const matches = (q
+      ? allAuthors.filter(a => tagMatches(a, q))
+      : allAuthors
+    ).filter(a => !selectedAuthors.includes(a));
     if (!matches.length) { hideAuthorSuggestions(); return; }
     authorSuggestEl.innerHTML = matches.slice(0, 8).map(a =>
       `<div style="padding:5px 9px;cursor:pointer;color:#1a1a1a;" data-author="${escapeHtml(a)}">${escapeHtml(a)}</div>`
