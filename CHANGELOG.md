@@ -5,6 +5,20 @@
 
 ---
 
+## [1.26.7] - 2026-04-20
+
+### Fixed
+- **保存ウィンドウのタグ・サブタグ・権利者サジェストが全く表示されない緊急リグレッション修正**
+  - v1.26.6 で入力欄にリサイズ機能（CSS `resize: horizontal`）を付与した際、必要な `overflow: auto` が suggestions ドロップダウン（`position: absolute`、box の下に表示）を clipping してしまい、**サジェスト全体が非表示**になる致命的不具合が発生。
+  - 対策：リサイズ機能（CSS `resize` ＋ ResizeObserver による永続化）を一旦撤回。固定の flex-basis 比率（タグ:サブタグ = 1:2、権利者 180px）のみ維持し、chip 配置・権利者ボックススタイル・サジェスト前方一致統一は継続。
+  - リサイズ機能は overflow を使わない方式（JS カスタムリサイズハンドル等）で後続バージョンに再実装予定。
+
+### Changed
+- manifest.json: 1.26.6 → 1.26.7
+- **native/image_saver.py は変更なし**（version 1.10.0 据え置き）
+
+---
+
 ## [1.26.6] - 2026-04-20
 
 ### Fixed

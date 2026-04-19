@@ -346,18 +346,17 @@ function buildModalHTML(defaultFilename) {
     .suggestion-item { padding: 6px 10px; cursor: pointer; font-size: 12px; }
     .suggestion-item:hover, .suggestion-item.active { background: #f0f4ff; }
 
-    /* v1.26.6 (GROUP-22): suggestions の位置基準＋ユーザーリサイズ可能化
-       旧：tag/subtag/author は固定幅（340/240px）＋ max-width キャップ
-       新：main:sub = 1:2 デフォルトの flex-basis、CSS resize: horizontal でユーザー調整可 */
+    /* v1.26.6 (GROUP-22) → v1.26.7 hotfix: リサイズ機能を一旦撤回。
+       overflow:auto（resize:horizontal 必須）が suggestions ドロップダウンを
+       clipping してしまう問題が発覚したため、固定比率のみ維持する。
+       リサイズ対応は後続バージョンで overflow を使わない方式で再設計予定。 */
     .dest-tabbar-tag-wrap {
       position: relative; display: flex; flex-direction: column;
       flex: 0 1 33%; min-width: 100px; max-width: 100%;
-      resize: horizontal; overflow: auto;
     }
     .dest-tabbar-subtag-wrap {
       position: relative; display: flex; flex-direction: column;
       flex: 0 1 66%; min-width: 100px; max-width: 100%;
-      resize: horizontal; overflow: auto;
     }
     .dest-tabbar-subtag-wrap .dest-tabbar-tag-area {
       border-color: #d0c8f0; /* 薄紫でタグ欄と区別 */
@@ -365,11 +364,10 @@ function buildModalHTML(defaultFilename) {
     .dest-tabbar-subtag-wrap .dest-tabbar-tag-area:focus-within {
       border-color: #7c5cbf;
     }
-    /* 権利者 box（main-tabbar 内）もタグ入力と同スタイル＋リサイズ可能 */
+    /* 権利者 box（main-tabbar 内）もタグ入力と同スタイル、幅は flex-basis 180px */
     .author-wrap {
       position: relative; display: flex; flex-direction: column;
       flex: 0 1 180px; min-width: 100px; max-width: 100%;
-      resize: horizontal; overflow: auto;
     }
     .author-wrap .dest-tabbar-tag-area {
       border-color: #e9d5ff; /* 薄紫寄りで権利者を表現 */
@@ -4735,48 +4733,10 @@ function setupModalEvents(
     });
   }
 
-  // ================================================================
-  // v1.26.6 (GROUP-22): タグ／サブタグ／権利者 box のリサイズ永続化
-  // storage.local.modalBoxWidths = { tagBox, subtagBox, authorBox } in px
-  // ================================================================
-  (async () => {
-    const tagWrap    = document.querySelector(".dest-tabbar-tag-wrap");
-    const subtagWrap = document.querySelector(".dest-tabbar-subtag-wrap");
-    const authorWrap = document.querySelector(".author-wrap");
-    if (!tagWrap || !subtagWrap || !authorWrap) return;
-
-    // 保存済み幅を復元（inline style で適用、flex-basis を上書き）
-    try {
-      const { modalBoxWidths } = await browser.storage.local.get("modalBoxWidths");
-      if (modalBoxWidths?.tagBox)    tagWrap.style.width    = modalBoxWidths.tagBox + "px";
-      if (modalBoxWidths?.subtagBox) subtagWrap.style.width = modalBoxWidths.subtagBox + "px";
-      if (modalBoxWidths?.authorBox) authorWrap.style.width = modalBoxWidths.authorBox + "px";
-    } catch {}
-
-    // ResizeObserver でユーザーリサイズ検知 → debounce 500ms で保存
-    let saveTimer = null;
-    const scheduleSave = () => {
-      if (saveTimer) clearTimeout(saveTimer);
-      saveTimer = setTimeout(async () => {
-        try {
-          const cur = await browser.storage.local.get("modalBoxWidths");
-          const prev = cur.modalBoxWidths || {};
-          await browser.storage.local.set({
-            modalBoxWidths: {
-              ...prev,
-              tagBox:    Math.round(tagWrap.offsetWidth),
-              subtagBox: Math.round(subtagWrap.offsetWidth),
-              authorBox: Math.round(authorWrap.offsetWidth),
-            }
-          });
-        } catch {}
-      }, 500);
-    };
-    const ro = new ResizeObserver(scheduleSave);
-    ro.observe(tagWrap);
-    ro.observe(subtagWrap);
-    ro.observe(authorWrap);
-  })();
+  // v1.26.7 hotfix: 旧 v1.26.6 のリサイズ永続化ロジックは overflow:auto 経由で
+  // suggestions ドロップダウンを clipping してしまう問題が発覚したため撤回済み。
+  // リサイズ機能は overflow:hidden を使わない方式（例：JS カスタム handle）で
+  // 再実装予定。
 
   // ================================================================
   const colLeft    = document.getElementById("col-left");
