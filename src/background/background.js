@@ -118,6 +118,19 @@ browser.windows.onRemoved.addListener((windowId) => {
   if (windowId === modalWindowId) modalWindowId = null;
 });
 
+// v1.26.1 (BUG-modal-focus-jump): モーダルタブが別ウィンドウへ移動された場合、
+// キャッシュしている modalWindowId を新 windowId へ自動更新する。
+// 連続保存モード or minimizeAfterSave でウィンドウが持続するとき、タブ移動後に
+// 旧 windowId のままだと次回呼出時に古い位置へフォーカスが行く不具合を防ぐ。
+browser.tabs.onAttached.addListener(async (tabId, { newWindowId }) => {
+  try {
+    const tab = await browser.tabs.get(tabId);
+    if (tab.url && tab.url.includes("/modal/modal.html") && modalWindowId !== newWindowId) {
+      modalWindowId = newWindowId;
+    }
+  } catch (_) {}
+});
+
 // ----------------------------------------------------------------
 // Content Script からのメッセージを受信
 // ----------------------------------------------------------------

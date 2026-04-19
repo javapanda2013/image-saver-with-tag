@@ -5,6 +5,26 @@
 
 ---
 
+## [1.26.1] - 2026-04-19
+
+### Fixed
+- **保存ウィンドウ移動後のフォーカスが旧ウィンドウ位置に戻る不具合を修正**（BUG-modal-focus-jump）
+  - 連続保存モードまたは `minimizeAfterSave` でウィンドウが持続する状態で、保存ウィンドウの「保存ウィンドウタブ」を別ウィンドウへ移動したあと、次回保存呼出時に移動前の元ウィンドウ位置へフォーカスが移動してしまう不具合を修正。
+  - 原因：`background.js` の `openModalWindow` は `modalWindowId` をキャッシュして既存ウィンドウを再利用するが、タブ移動を検知する仕組みがなく、旧 windowId が残り続けていた。`browser.windows.update(modalWindowId, { focused: true })` が古い位置へフォーカスし、`tabs.query` も空振りしてタブアクティブ化と `MODAL_NEW_IMAGE` メッセージ送信がスキップされていた。
+  - 対策：`browser.tabs.onAttached` リスナーを追加し、`/modal/modal.html` タブが別ウィンドウへ移動された際に `modalWindowId` を新 windowId へ自動更新する。
+
+- **保存ウィンドウ通常保存・連続保存で gif 画像のサムネイルが静止画になる不具合を修正**（GROUP-14-a / 14-b）
+  - `modal.js` の `fetchThumbnailInPage` が gif URL でも Canvas → JPEG 変換を強制しており、`background.js:564` の優先度ロジック（`thumbDataUrl || pyThumb`）によって Python 生成の gif アニメサムネが上書き・破棄されていた。即保存は modal.js を通らないため `thumbDataUrl = undefined` となり Python 由来の gif サムネがそのまま採用されており、通常保存との挙動差となっていた。
+  - 対策：`fetchThumbnailInPage` 冒頭に URL 拡張子 `.gif` 判定を追加し、true なら null を返して Python の gif サムネ経路へ委譲。fetch 経路（②）では追加で `Content-Type: image/gif` も検出して同様に null を返却（拡張子隠蔽 URL への保険）。
+  - これにより**通常保存／連続保存／即保存の全保存経路で gif アニメが保持されたサムネイルが生成される**。外部取込は既に動作していたため変更なし。
+  - 既存の静止画サムネで保存済みの gif 履歴は、設定画面「🖼 サムネイル生成」の overwrite モードで再生成可能。
+
+### Changed
+- manifest.json: 1.26.0 → 1.26.1
+- **native/image_saver.py は変更なし**（version 1.10.0 据え置き）
+
+---
+
 ## [1.26.0] - 2026-04-19
 
 ### Added

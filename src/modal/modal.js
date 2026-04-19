@@ -4097,6 +4097,15 @@ function setupModalEvents(
     try {
       const MAX = 600;
 
+      // v1.27.0 (GROUP-14-a/b): gif は Python 側 MAKE_GIF_THUMB_FILE 経由で
+      // アニメ保持サムネが生成されるため、ここでの Canvas→JPEG 変換を回避して
+      // null を返す。これにより background.js handleSave の優先度ロジック
+      // （thumbDataUrl || pyThumb）で Python 生成の gif アニメサムネが採用される。
+      // TODO (GROUP-15): mp4/Canvas→gif 変換機能を実装する際、変換済み gif は
+      // この関数を bypass して thumbDataUrl に直接セットする設計とする。もし
+      // 本関数を通す経路が生まれたら、引数に sourceMime を追加して判定する。
+      if (/\.gif(\?|#|$)/i.test(url)) return null;
+
       // ① DOM上の同ホスト <img> を crossOrigin="anonymous" で再ロードしてCanvas描画
       // （crossOriginなしで読み込まれた画像はCanvas汚染でblob取得不可のため再取得）
       let targetImg = null;
@@ -4147,6 +4156,9 @@ function setupModalEvents(
       // ② fetch（credentials:include）で取得
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) return null;
+      // v1.27.0 (GROUP-14-a/b): 拡張子なし/隠蔽 URL で gif が漏れた場合の捕捉。
+      // Python 側の gif サムネ経路へ委譲する。
+      if (/image\/gif/i.test(response.headers.get("content-type") || "")) return null;
       const blob   = await response.blob();
       const bitmap = await createImageBitmap(blob);
       const scale  = Math.min(MAX / bitmap.width, MAX / bitmap.height, 1);
