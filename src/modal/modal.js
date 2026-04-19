@@ -864,10 +864,10 @@ function buildModalHTML(defaultFilename) {
     .history-author:hover { background: #e9d5ff; }
     .history-author.filter-active { background: #7c3aed; color: #fff; }
 
-    /* 履歴タグ絞り込み入力欄 */
+    /* 履歴タグ絞り込み入力欄（v1.26.0: 中央配置→左寄せ寄り） */
     .history-filter-wrap {
       display: none; align-items: center; gap: 3px; flex-wrap: wrap;
-      margin: 0 auto; padding-bottom: 4px;
+      margin: 0 auto 0 20px; padding-bottom: 4px;
     }
     .history-filter-wrap.visible { display: flex; }
     .history-filter-mode-select {
@@ -881,6 +881,15 @@ function buildModalHTML(defaultFilename) {
     }
     .history-filter-clear.visible { display: block; }
     .history-filter-clear:hover { color: #e74c3c; }
+    /* GIF フィルターラベル（v1.26.0） */
+    .history-gif-filter-label {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; color: #444; cursor: pointer;
+      border: 1px solid #dde; border-radius: 4px;
+      padding: 2px 8px; background: #fff; white-space: nowrap;
+      user-select: none;
+    }
+    .history-gif-filter-label input[type="checkbox"] { margin: 0; cursor: pointer; }
     /* 絞り込みチップ UI（v1.21.1） */
     .hist-chip-box {
       position: relative; display: inline-flex; align-items: center;
@@ -1372,6 +1381,10 @@ function buildModalHTML(defaultFilename) {
                 <option value="and">AND</option>
                 <option value="or">OR</option>
               </select>
+              <label class="history-gif-filter-label" id="history-gif-filter-wrap" title="GIF のみ表示">
+                <input type="checkbox" id="history-gif-filter" />
+                <span>GIF のみ</span>
+              </label>
             </div>
           </div>
 
@@ -1774,6 +1787,7 @@ function setupModalEvents(
   let historyFilterTag    = ""; // shadow: chips.join(" ")（既存コード互換）
   let historyFilterAuthor = ""; // shadow: chips.join(" ")（既存コード互換）
   let historyFilterMode   = "and"; // "and" | "or"
+  let historyFilterGifOnly = false; // v1.26.0: GIF のみ表示フィルター
   let _historyRenderGen = 0; // renderHistory() の世代番号（非同期競合による二重描画防止）
   let _histPage     = 0;   // 現在ページ（0始まり）
   let _histPageSize = 100; // 1ページの表示件数
@@ -2031,6 +2045,16 @@ function setupModalEvents(
     });
   }
 
+  // v1.26.0: GIF のみフィルター
+  const historyGifFilterInput = document.getElementById("history-gif-filter");
+  if (historyGifFilterInput) {
+    historyGifFilterInput.addEventListener("change", (e) => {
+      historyFilterGifOnly = e.target.checked;
+      _histPage = 0;
+      renderHistory();
+    });
+  }
+
 
   function renderHistory() {
     const gen = ++_historyRenderGen; // この呼び出しの世代番号を確保
@@ -2079,7 +2103,11 @@ function setupModalEvents(
         return tagMatch && authorMatch;
       });
     }
-    const isFiltered = hasTagFilter || hasAuthFilter;
+    // v1.26.0: GIF のみフィルター（filename 拡張子ベース）
+    if (historyFilterGifOnly) {
+      filtered = filtered.filter(e => /\.gif$/i.test(e.filename || ""));
+    }
+    const isFiltered = hasTagFilter || hasAuthFilter || historyFilterGifOnly;
 
     const totalFiltered = filtered.length;
     // ページ範囲を超えないよう補正
