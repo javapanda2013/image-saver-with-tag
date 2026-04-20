@@ -4168,7 +4168,7 @@ function setupModalEvents(
     try {
       const MAX = 600;
 
-      // v1.27.0 (GROUP-14-a/b): gif は Python 側 MAKE_GIF_THUMB_FILE 経由で
+      // v1.26.1 (GROUP-14-a/b): gif は Python 側 MAKE_GIF_THUMB_FILE 経由で
       // アニメ保持サムネが生成されるため、ここでの Canvas→JPEG 変換を回避して
       // null を返す。これにより background.js handleSave の優先度ロジック
       // （thumbDataUrl || pyThumb）で Python 生成の gif アニメサムネが採用される。
@@ -4227,7 +4227,7 @@ function setupModalEvents(
       // ② fetch（credentials:include）で取得
       const response = await fetch(url, { credentials: "include" });
       if (!response.ok) return null;
-      // v1.27.0 (GROUP-14-a/b): 拡張子なし/隠蔽 URL で gif が漏れた場合の捕捉。
+      // v1.26.1 (GROUP-14-a/b): 拡張子なし/隠蔽 URL で gif が漏れた場合の捕捉。
       // Python 側の gif サムネ経路へ委譲する。
       if (/image\/gif/i.test(response.headers.get("content-type") || "")) return null;
       const blob   = await response.blob();
