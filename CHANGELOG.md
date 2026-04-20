@@ -5,6 +5,31 @@
 
 ---
 
+## [1.28.0] - 2026-04-20
+
+### Added
+- **取り込み予定フォルダリストのソート機能**（GROUP-19 Phase B）
+  - タブごとに独立してソートモードを保持。6 種（挿入順／パス名／ステータス／ファイル数／進捗率／サムネ容量）。
+  - ソートセレクトはタブ下の中央配置。選択値は `storage.local.extImportFlSortModes: { [tabId]: mode }` に永続化、タブ切替時に選択値を自動同期。
+  - 単体タブではエントリ配列を、ルート別タブでは該当 subfolders エントリ内の `subfolders[]` を並び替え。
+  - ステータス順序：未開始→進行中→完了→空。セッション未取得のアイテムは数値系ソートで末尾集約（-1 扱い）。
+
+- **テーブル領域のユーザーリサイズ可能化**（GROUP-19 Phase C-1）
+  - `ext-fl-table-container` に CSS `resize: vertical; overflow: auto` を適用。右下ハンドルドラッグで縦方向に高さ調整可能。
+  - 最小 150px / 最大 80vh。リサイズ後の高さを `ResizeObserver` ＋ debounce 500ms で `storage.local.extImportFlTableHeight` に保存、次回起動時復元。
+  - テーブル内に position:absolute のドロップダウン等がないため、v1.26.7 で発生した overflow clipping 問題は再発しない。
+
+- **ルート別タブの D&D 並び替え**（GROUP-19 Phase C-2）
+  - HTML5 Drag & Drop API で実装。ルート別タブ（`draggable="true"`）をドラッグして順序変更可能、単体タブは左端固定で D&D 対象外。
+  - 新しい順序は `storage.local.extImportFlTabOrder: string[]`（normalized rootPath 配列）に永続化。
+  - 未保存順序のルート（新規登録）は保存順序の末尾に追加。
+
+### Changed
+- manifest.json: 1.27.0 → 1.28.0
+- **native/image_saver.py は変更なし**（version 1.10.0 据え置き）
+
+---
+
 ## [1.27.0] - 2026-04-20
 
 ### Added

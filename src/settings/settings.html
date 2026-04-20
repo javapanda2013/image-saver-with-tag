@@ -317,6 +317,11 @@
       border-bottom: 1px solid #fff;
       z-index: 1;
     }
+    /* v1.28.0 GROUP-19 Phase C: ルート別タブの D&D 並び替え用 */
+    .ext-fl-tab[draggable="true"] { cursor: grab; }
+    .ext-fl-tab[draggable="true"]:active { cursor: grabbing; }
+    .ext-fl-tab.dragging { opacity: 0.5; }
+    .ext-fl-tab.drag-over { border-left: 3px solid #4a90e2; }
     .import-result {
       font-size: 11px; padding: 8px 12px; border-radius: 5px;
       display: none; line-height: 1.8; white-space: pre-wrap; font-family: "Consolas", monospace;
@@ -1240,11 +1245,22 @@
         </div>
         <!-- v1.27.0 GROUP-19 Phase A: タブバー（単体 / ルート別）-->
         <div id="ext-fl-tabbar" style="display:flex;gap:2px;margin-bottom:0;flex-wrap:wrap;border-bottom:1px solid #c0cee0;"></div>
-        <!-- v1.25.0 GROUP-12-merge: 取り込み予定フォルダリストとセッション一覧を統合
-             列順：☐ / 状態 / フォルダパス / 操作 / 進捗 / サムネ
-             v1.25.1 BUG-ext-table-narrow: 狭 viewport（720px body）対策で列幅を引き締め、
-             min-width 700px ＋ 外側 div の overflow-x: auto で極端な狭さでは横スクロールに逃がす -->
-        <div style="overflow-x:auto;">
+        <!-- v1.28.0 GROUP-19 Phase B: ソートバー（中央配置）-->
+        <div id="ext-fl-sort-bar" style="display:flex;justify-content:center;align-items:center;gap:6px;padding:4px 8px;background:#fafcff;border-bottom:1px solid #e3eaf2;font-size:11px;color:#555;">
+          <label style="display:inline-flex;align-items:center;gap:4px;">
+            ソート：
+            <select id="ext-fl-sort-select" style="font-size:11px;padding:2px 6px;border:1px solid #d0d0d0;border-radius:4px;background:#fff;font-family:inherit;cursor:pointer;">
+              <option value="insertion">挿入順</option>
+              <option value="path">パス名</option>
+              <option value="status">ステータス</option>
+              <option value="count">ファイル数</option>
+              <option value="progress">進捗率</option>
+              <option value="thumbsize">サムネ容量</option>
+            </select>
+          </label>
+        </div>
+        <!-- v1.28.0 GROUP-19 Phase C: リサイズ可能なテーブルコンテナ -->
+        <div id="ext-fl-table-container" style="resize:vertical;overflow:auto;min-height:150px;max-height:80vh;border:1px solid #e0e0e0;border-radius:0 0 4px 4px;">
         <table id="ext-fl-table" style="width:100%;min-width:700px;border-collapse:collapse;font-size:12px;table-layout:fixed;">
           <thead>
             <tr style="background:#f5f5f5;">
@@ -1259,7 +1275,7 @@
           <tbody id="ext-fl-tbody"></tbody>
         </table>
         </div>
-        <div id="ext-fl-empty" style="font-size:12px;color:#888;padding:8px;text-align:center;">
+        <div id="ext-fl-empty" style="font-size:12px;color:#888;padding:8px;text-align:center;background:#fafafa;border:1px dashed #ddd;border-radius:4px;margin-top:4px;">
           登録されたフォルダはありません。
         </div>
       </div>

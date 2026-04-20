@@ -78,6 +78,13 @@ let _extFlSelectedKeys = new Set();
 // ---- v1.27.0 GROUP-19 Phase A: タブ化状態 ----
 // "single" or "root:<normalizedPath>" の形式で保持。起動時に storage.local.extImportFlActiveTab から復元
 let _extFlActiveTab = "single";
+// ---- v1.28.0 GROUP-19 Phase B/C: ソート状態・タブ順序・テーブル高さ ----
+// { [tabId]: "insertion"|"path"|"status"|"count"|"progress"|"thumbsize" }
+let _extFlSortModes = {};
+// ルート別タブの表示順（normalized rootPath の配列）。単体タブは常に左端固定で管理外
+let _extFlTabOrder = [];
+// テーブル領域の高さ（px、ユーザーリサイズ後の値を永続化）
+let _extFlTableHeight = null;
 // サブフォルダピッカー用: ドラッグ操作の状態
 let _extPickerDrag     = null;
 //   { mode: "unify"|"invert", target: bool, lastIdx: number, processed: Set<number>, anchorIdx: number }
@@ -4795,12 +4802,17 @@ async function _setupExtPerItemMode() {
     "extImportCarryover", "extImportCopyToDest",
     // v1.27.0 GROUP-19: アクティブタブの永続化
     "extImportFlActiveTab",
+    // v1.28.0 GROUP-19 Phase B/C: ソート・タブ順序・テーブル高さ
+    "extImportFlSortModes", "extImportFlTabOrder", "extImportFlTableHeight",
   ]);
   _extMode           = stored.extImportMode       || "batch";
   _extSessions       = stored.extImportSessions   || [];
   _extFolderList     = stored.extImportFolderList || [];
   _extCompletedRoots = stored.extImportCompletedRoots || [];
   _extFlActiveTab    = stored.extImportFlActiveTab || "single";
+  _extFlSortModes    = stored.extImportFlSortModes || {};
+  _extFlTabOrder     = stored.extImportFlTabOrder || [];
+  _extFlTableHeight  = stored.extImportFlTableHeight || null;
   // v1.23.0
   _extCarryover = Object.assign(
     { tags: false, subtags: false, authors: false, savepath: false },
@@ -5731,20 +5743,83 @@ function _extBuildRowActions(item, targetPath, subfolderPath, statusInfo) {
 /** 現在の _extFolderList からタブ一覧を計算
  *  - 単体タブ（"single"、固定、左端）
  *  - 各 subfolders エントリのルートごとに 1 タブ（"root:<normalizedPath>"、追加順）
+ *  v1.28.0 Phase C: _extFlTabOrder に保存された順序を優先反映（D&D 並び替え結果）
  */
 function _extFlGetTabs() {
   const tabs = [{ id: "single", label: "単体", fullPath: null }];
-  const seenRoots = new Set();
+  // rootPath 集合を normalized で蓄積
+  const rootMap = new Map(); // normRoot → { label, fullPath }
   for (const item of _extFolderList) {
     if (item.mode !== "subfolders") continue;
     const normRoot = _normalizeExtPath(item.rootPath);
-    if (seenRoots.has(normRoot)) continue;
-    seenRoots.add(normRoot);
+    if (rootMap.has(normRoot)) continue;
     const parts = (item.rootPath || "").split(/[\\/]+/).filter(Boolean);
     const label = parts[parts.length - 1] || item.rootPath || "(root)";
-    tabs.push({ id: `root:${normRoot}`, label, fullPath: item.rootPath });
+    rootMap.set(normRoot, { label, fullPath: item.rootPath });
+  }
+  // 保存済み順序（_extFlTabOrder）に従って配置、未登録は末尾
+  const orderedKeys = [
+    ..._extFlTabOrder.filter(k => rootMap.has(k)),
+    ...Array.from(rootMap.keys()).filter(k => !_extFlTabOrder.includes(k)),
+  ];
+  for (const normRoot of orderedKeys) {
+    const info = rootMap.get(normRoot);
+    tabs.push({ id: `root:${normRoot}`, label: info.label, fullPath: info.fullPath });
   }
   return tabs;
+}
+
+// ================================================================
+// v1.28.0 GROUP-19 Phase B: ソート
+// ================================================================
+
+/** ステータス順序マップ（ステータス別ソート用） */
+function _extFlStatusOrder(kind) {
+  return ({ notstarted: 0, inprogress: 1, done: 2, empty: 3 })[kind] ?? 99;
+}
+
+/** エントリ／サブフォルダの targetPath からソート用メトリクスを抽出 */
+function _extFlGetSortMetric(targetPath, mode) {
+  if (mode === "path") return targetPath || "";
+  if (mode === "status") {
+    const s = _extDetermineStatus(targetPath);
+    return _extFlStatusOrder(s.kind);
+  }
+  if (mode === "count") {
+    const s = _extDetermineStatus(targetPath).session;
+    return s?.queue?.length ?? -1;
+  }
+  if (mode === "progress") {
+    const s = _extDetermineStatus(targetPath).session;
+    if (!s?.queue?.length) return -1;
+    const q = s.queue;
+    const doneOrSkip = q.filter(x => x.status === "done" || x.status === "skipped").length;
+    return doneOrSkip / q.length;
+  }
+  if (mode === "thumbsize") {
+    return _extThumbStatsCache[targetPath]?.sizeBytes ?? -1;
+  }
+  return 0;
+}
+
+/** 単体タブのエントリ配列をソート */
+function _extFlSortSingleEntries(items, mode) {
+  if (!mode || mode === "insertion") return items;
+  const metric = (item) => _extFlGetSortMetric(item.rootPath, mode);
+  const cmp = mode === "path"
+    ? (a, b) => String(metric(a)).localeCompare(String(metric(b)))
+    : (a, b) => (metric(a) || 0) - (metric(b) || 0);
+  return [...items].sort(cmp);
+}
+
+/** ルート別タブのサブフォルダ配列をソート */
+function _extFlSortSubfolders(subfolders, mode) {
+  if (!mode || mode === "insertion") return subfolders;
+  const metric = (sub) => _extFlGetSortMetric(sub.path, mode);
+  const cmp = mode === "path"
+    ? (a, b) => String(metric(a)).localeCompare(String(metric(b)))
+    : (a, b) => (metric(a) || 0) - (metric(b) || 0);
+  return [...subfolders].sort(cmp);
 }
 
 /** アクティブタブに該当する _extFolderList 項目を返す
@@ -5764,7 +5839,8 @@ function _extFlFilterByTab(tabId) {
   return [];
 }
 
-/** タブバー描画。タブ切替時は storage.local.extImportFlActiveTab に保存＋再描画 */
+/** タブバー描画。タブ切替時は storage.local.extImportFlActiveTab に保存＋再描画
+ *  v1.28.0 Phase C: ルート別タブのみ D&D で並び替え可能（単体タブは左端固定） */
 function _extFlRenderTabs() {
   const bar = document.getElementById("ext-fl-tabbar");
   if (!bar) return;
@@ -5782,15 +5858,91 @@ function _extFlRenderTabs() {
     btn.className = "ext-fl-tab" + (tab.id === _extFlActiveTab ? " active" : "");
     btn.textContent = tab.label;
     if (tab.fullPath) btn.title = tab.fullPath;
+    btn.dataset.tabId = tab.id;
+    // 単体タブは D&D 不可。ルート別タブのみドラッグ可
+    if (tab.id !== "single") {
+      btn.draggable = true;
+      btn.addEventListener("dragstart", (e) => {
+        btn.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", tab.id);
+      });
+      btn.addEventListener("dragend", () => {
+        btn.classList.remove("dragging");
+        bar.querySelectorAll(".ext-fl-tab.drag-over").forEach(el => el.classList.remove("drag-over"));
+      });
+      btn.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        btn.classList.add("drag-over");
+      });
+      btn.addEventListener("dragleave", () => btn.classList.remove("drag-over"));
+      btn.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        btn.classList.remove("drag-over");
+        const srcTabId = e.dataTransfer.getData("text/plain");
+        if (!srcTabId || srcTabId === tab.id || !srcTabId.startsWith("root:") || !tab.id.startsWith("root:")) return;
+        const srcKey = srcTabId.slice(5);
+        const dstKey = tab.id.slice(5);
+        // 現在の orderedKeys を再構築して srcKey を dstKey の前に差し込む
+        const tabsNow = _extFlGetTabs().filter(t => t.id !== "single").map(t => t.id.slice(5));
+        const without = tabsNow.filter(k => k !== srcKey);
+        const dstIdx = without.indexOf(dstKey);
+        without.splice(dstIdx, 0, srcKey);
+        _extFlTabOrder = without;
+        await browser.storage.local.set({ extImportFlTabOrder: _extFlTabOrder });
+        _extFlRenderTabs();
+      });
+    }
     btn.addEventListener("click", () => {
       if (_extFlActiveTab === tab.id) return;
       _extFlActiveTab = tab.id;
       browser.storage.local.set({ extImportFlActiveTab: _extFlActiveTab }).catch(() => {});
       _extFlRenderTabs();
+      _extFlSyncSortSelect();
       _extRenderFolderList();
     });
     bar.appendChild(btn);
   }
+}
+
+/** v1.28.0 Phase B: ソートセレクトを現在アクティブタブの保存値に同期 */
+function _extFlSyncSortSelect() {
+  const sel = document.getElementById("ext-fl-sort-select");
+  if (!sel) return;
+  sel.value = _extFlSortModes[_extFlActiveTab] || "insertion";
+}
+
+/** v1.28.0 Phase B: ソートセレクタのイベントリスナ登録（外部取込タブ初期化時に呼ぶ） */
+function _extFlSetupSortUI() {
+  const sel = document.getElementById("ext-fl-sort-select");
+  if (!sel || sel.dataset.bound) return;
+  sel.dataset.bound = "1";
+  sel.addEventListener("change", () => {
+    const mode = sel.value;
+    _extFlSortModes = { ..._extFlSortModes, [_extFlActiveTab]: mode };
+    browser.storage.local.set({ extImportFlSortModes: _extFlSortModes }).catch(() => {});
+    _extRenderFolderList();
+  });
+}
+
+/** v1.28.0 Phase C: テーブル高さリサイズ永続化のセットアップ */
+function _extFlSetupTableResize() {
+  const cont = document.getElementById("ext-fl-table-container");
+  if (!cont || cont.dataset.bound) return;
+  cont.dataset.bound = "1";
+  // 保存済み高さを復元
+  if (_extFlTableHeight) cont.style.height = _extFlTableHeight + "px";
+  // ResizeObserver で変化検知、debounce 500ms で保存
+  let saveTimer = null;
+  const ro = new ResizeObserver(() => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      _extFlTableHeight = Math.round(cont.offsetHeight);
+      browser.storage.local.set({ extImportFlTableHeight: _extFlTableHeight }).catch(() => {});
+    }, 500);
+  });
+  ro.observe(cont);
 }
 
 /**
@@ -5811,7 +5963,19 @@ async function _extRenderFolderList() {
 
   // v1.27.0 GROUP-19 Phase A: タブバー再描画＋アクティブタブで _extFolderList をフィルタ
   _extFlRenderTabs();
-  const filtered = _extFlFilterByTab(_extFlActiveTab);
+  // v1.28.0 Phase B/C: ソート UI・リサイズ UI の初期化（初回のみ有効）
+  _extFlSetupSortUI();
+  _extFlSetupTableResize();
+  _extFlSyncSortSelect();
+  const rawFiltered = _extFlFilterByTab(_extFlActiveTab);
+  // v1.28.0 Phase B: アクティブタブのソートモードを適用
+  const sortMode = _extFlSortModes[_extFlActiveTab] || "insertion";
+  const filtered = _extFlActiveTab === "single"
+    ? _extFlSortSingleEntries(rawFiltered, sortMode)
+    : rawFiltered.map(item =>
+        item.mode === "subfolders"
+          ? { ...item, subfolders: _extFlSortSubfolders(item.subfolders || [], sortMode) }
+          : item);
 
   tbody.innerHTML = "";
   if (filtered.length === 0) {
