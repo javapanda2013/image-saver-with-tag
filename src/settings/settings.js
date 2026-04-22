@@ -865,6 +865,15 @@ async function exportData() {
   const zipSizeMB = (zipRes.zipSize / 1024 / 1024).toFixed(2);
   log(`🗜 zip 生成完了（${zipRes.fileCount} ファイル、${zipSizeMB} MB）`);
 
+  // GROUP-26-cleanup (v1.30.1): Native 側で一時 dir 削除に失敗した場合の明示通知
+  // OneDrive / アンチウイルスのファイル監視でロックされているケース（Native 側は 5 回 retry 済）
+  if (zipRes.cleanupWarning) {
+    logError(`⚠️ ${zipRes.cleanupWarning}`);
+    if (zipRes.tempDirPath) {
+      log(`📂 手動削除してください: ${zipRes.tempDirPath}`);
+    }
+  }
+
   if (useAutoSave) {
     if (isDiff) await browser.storage.local.set({ lastExportedAt: exportedAt });
     log(`✅ エクスポート完了: ${actualZipPath}`);

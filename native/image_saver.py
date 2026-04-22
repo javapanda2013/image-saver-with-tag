@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 image_saver.py  —  Firefox Native Messaging ホスト
-version: 1.11.0
+version: 1.11.1
 
 受け取るコマンド:
   {"cmd": "LIST_DIR",      "path": null}
@@ -1311,16 +1311,47 @@ def handle_mkdir_export_tmp(parent_path=None):
         return {"ok": False, "error": str(e)}
 
 
+def _retry_rmtree(path, max_retries=5, wait_ms=500):
+    """
+    v1.11.1: Windows + OneDrive / アンチウイルス環境でのファイルハンドル遅延解放を吸収する
+    rmtree の retry ラッパー。
+
+    OneDrive は新規作成ファイルを即時クラウド同期のために open → upload することがあり、
+    shutil.rmtree が PermissionError で失敗するケースがある（v1.30.0 での実例：
+    E:\\OneDrive\\... 配下のエクスポート一時 dir が 500ms〜数秒ロックされる）。
+
+    - 最大 max_retries 回試行、各試行間に wait_ms の sleep
+    - 成功時：(True, None)
+    - 全失敗時：(False, 最終エラーメッセージ)
+    """
+    import time
+    import shutil
+    last_err = None
+    for i in range(max_retries):
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+            return True, None
+        except (PermissionError, OSError) as e:
+            last_err = str(e)
+            if i < max_retries - 1:
+                time.sleep(wait_ms / 1000)
+                continue
+        except Exception as e:
+            return False, str(e)
+    return False, f"retry exhausted ({max_retries} 回): {last_err}"
+
+
 def handle_zip_directory(src_dir, dst_zip_path, delete_src=True):
     """
     v1.11.0: GROUP-26-split 対応。src_dir 内の全ファイルを zip 化して dst_zip_path に書き出す。
+    v1.11.1: delete_src=True 時の rmtree を retry 付きに変更、失敗時は cleanupWarning で通知。
     - zipfile.ZIP_DEFLATED 圧縮（サムネ dataUrl 等テキスト系は大幅圧縮可能）
     - 再帰なし（エクスポート一時 dir は平坦構造前提）、サブディレクトリは無視
-    - delete_src=True なら zip 化成功後に shutil.rmtree(src_dir) で一時 dir 削除
+    - delete_src=True なら zip 化成功後に retry 付き rmtree で一時 dir 削除
+    - 削除失敗時は応答に cleanupWarning / tempDirPath を含めて呼出元に通知（非致命）
     - dst_zip_path が既存なら unique_path で連番付与（誤上書き防止）
-    - 返却：{ok, zipPath, fileCount, zipSize} or {ok:False, error, errorCode}
+    - 返却：{ok, zipPath, fileCount, zipSize, cleanupWarning?, tempDirPath?} or {ok:False, error, errorCode}
     """
-    import shutil
     import zipfile
     try:
         if not src_dir or not os.path.isdir(src_dir):
@@ -1351,18 +1382,21 @@ def handle_zip_directory(src_dir, dst_zip_path, delete_src=True):
 
         zip_size = os.path.getsize(dst_zip_path)
 
-        if delete_src:
-            try:
-                shutil.rmtree(src_dir, ignore_errors=True)
-            except Exception:
-                pass  # 削除失敗は非致命
-
-        return {
+        response = {
             "ok":        True,
             "zipPath":   dst_zip_path,
             "fileCount": file_count,
             "zipSize":   zip_size,
         }
+
+        if delete_src:
+            removed, err = _retry_rmtree(src_dir)
+            if not removed:
+                # v1.11.1: 削除失敗は非致命だが、応答で明示通知（呼出元で UI log + 手動削除促し）
+                response["cleanupWarning"] = f"一時ディレクトリ削除失敗: {err}"
+                response["tempDirPath"] = src_dir
+
+        return response
 
     except PermissionError as e:
         return {"ok": False, "error": f"書き込み権限がありません: {e}"}

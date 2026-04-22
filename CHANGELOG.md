@@ -5,6 +5,34 @@
 
 ---
 
+## [1.30.1] - 2026-04-23
+
+### Fixed — エクスポート後の一時ディレクトリ残留（GROUP-26-cleanup）
+
+v1.30.0 エクスポート後、OneDrive 同期フォルダ配下で **空の `_borgestag_export_tmp_*` ディレクトリが残留**する不具合を修正。
+
+#### 原因
+`handle_zip_directory` の末尾で `shutil.rmtree(src_dir, ignore_errors=True)` を呼んでいたが、OneDrive は新規作成ファイルを即時クラウド同期のため open → upload するため、zip 化完了直後の rmtree が `PermissionError` で失敗。`ignore_errors=True` により失敗が黙殺され、応答は `ok:true` のまま空フォルダだけが残る状態だった。
+
+#### 対策
+- `_retry_rmtree(path, max_retries=5, wait_ms=500)` 新設：Windows + OneDrive / アンチウイルスのファイルハンドル遅延解放を吸収する retry ラッパー。最大 5 回試行、各試行間に 500ms sleep。
+- `handle_zip_directory` の rmtree 呼出を `_retry_rmtree` に置換。全 retry 失敗時は応答に `cleanupWarning` / `tempDirPath` を含めて呼出元に通知（非致命）。
+- `settings.js exportData()` 側で `zipRes.cleanupWarning` を受けたら `logError` で UI に表示＋手動削除パスを案内。
+
+### Changed
+- `native/image_saver.py`: version 1.11.0 → 1.11.1（`_retry_rmtree` 新設、`handle_zip_directory` 改修）
+- manifest.json: 1.30.0 → 1.30.1
+
+### 影響調査
+- 既存機能への影響なし（rmtree 挙動のみ変更、zip 化本体ロジック不変）
+- OneDrive 配下以外（非同期フォルダ）でも retry=1 回目で成功するので性能劣化なし
+- 稀に 5 回 retry 全失敗するケース（極端に長い OneDrive 同期 or AV スキャン）ではユーザーに明示通知し手動削除を促す → サイレント失敗からの改善
+
+### Known Limitations（引き続き v1.30.x で対応検討）
+- Firefox エクスポート時メモリピーク（3261 件サムネ取得時に瞬間 ~6-7GB）：本リリースでは未対応。別調査中（GROUP-26-mem-2 候補）。
+
+---
+
 ## [1.30.0] - 2026-04-22
 
 ### Added — エクスポート分割出力＋ zip 化＋「zip からインポート」（GROUP-26-split / GROUP-26-unzip）
