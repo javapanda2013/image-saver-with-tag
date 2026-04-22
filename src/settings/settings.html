@@ -882,7 +882,7 @@
           <button class="backup-btn export" id="btn-export">⬇ エクスポート（JSONファイル保存）</button>
           <label class="backup-btn import" id="label-import">
             ⬆ インポート（JSONファイル読み込み）
-            <input type="file" id="input-import" accept=".json" style="display:none" />
+            <input type="file" id="input-import" accept=".json,.zip" style="display:none" />
           </label>
         </div>
         <div class="import-result" id="export-result" style="display:none"></div>
@@ -1641,6 +1641,8 @@
 
   </div>
 
+  <!-- JSZip v3.10.1（MIT、GROUP-26-unzip / v1.30.0）: zip インポート展開用 -->
+  <script src="../vendor/jszip.min.js"></script>
   <script src="settings.js"></script>
 </body>
 </html>

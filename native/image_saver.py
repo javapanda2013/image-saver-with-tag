@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 image_saver.py  —  Firefox Native Messaging ホスト
-version: 1.10.0
+version: 1.11.0
 
 受け取るコマンド:
   {"cmd": "LIST_DIR",      "path": null}
@@ -10,6 +10,8 @@ version: 1.10.0
   {"cmd": "MKDIR",         "path": "C:\\\\...\\\\新フォルダ"}
   {"cmd": "OPEN_EXPLORER", "path": "C:\\\\...\\\\フォルダ"}
   {"cmd": "RENAME_FILE",   "srcPath": "...", "dstPath": "..."}  # v1.10.0 GROUP-5-A
+  {"cmd": "MKDIR_EXPORT_TMP", "parentPath": null}  # v1.11.0 GROUP-26-split
+  {"cmd": "ZIP_DIRECTORY",   "srcDir": "...", "dstZipPath": "...", "deleteSrc": true}  # v1.11.0 GROUP-26-split
 """
 
 import sys
@@ -1276,6 +1278,98 @@ def unique_path(path):
         i += 1
 
 
+def handle_mkdir_export_tmp(parent_path=None):
+    """
+    v1.11.0: GROUP-26-split 対応。エクスポート分割出力用の一時ディレクトリを作成する。
+    - parent_path=None / 空 → %TEMP%\\borgestag_chunk_cache\\export_tmp_<ts>\\ に作成（AutoSave OFF 経路）
+      既存 _CHUNK_TEMP_DIR 配下なので、READ_FILE_CHUNK / DELETE_CHUNK_FILE のパス制限を通過できる
+    - parent_path 指定 → {parent_path}\\_borgestag_export_tmp_<ts>\\ に作成（AutoSave ON 経路）
+    - タイムスタンプ（ミリ秒）で一意化（同一セッション内での衝突回避）
+    - 返却：{ok, tempDir} or {ok:False, error, errorCode}
+    """
+    try:
+        import time
+        ts = str(int(time.time() * 1000))
+        if parent_path:
+            if not os.path.isdir(parent_path):
+                return {
+                    "ok":        False,
+                    "error":     f"親ディレクトリが存在しません: {parent_path}",
+                    "errorCode": "PARENT_NOT_FOUND",
+                }
+            temp_dir = os.path.join(parent_path, f"_borgestag_export_tmp_{ts}")
+        else:
+            chunk_root = _get_chunk_temp_dir()
+            if not chunk_root:
+                return {"ok": False, "error": "一時ディレクトリルート作成失敗"}
+            temp_dir = os.path.join(chunk_root, f"export_tmp_{ts}")
+        os.makedirs(temp_dir, exist_ok=True)
+        return {"ok": True, "tempDir": temp_dir}
+    except PermissionError as e:
+        return {"ok": False, "error": f"書き込み権限がありません: {e}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def handle_zip_directory(src_dir, dst_zip_path, delete_src=True):
+    """
+    v1.11.0: GROUP-26-split 対応。src_dir 内の全ファイルを zip 化して dst_zip_path に書き出す。
+    - zipfile.ZIP_DEFLATED 圧縮（サムネ dataUrl 等テキスト系は大幅圧縮可能）
+    - 再帰なし（エクスポート一時 dir は平坦構造前提）、サブディレクトリは無視
+    - delete_src=True なら zip 化成功後に shutil.rmtree(src_dir) で一時 dir 削除
+    - dst_zip_path が既存なら unique_path で連番付与（誤上書き防止）
+    - 返却：{ok, zipPath, fileCount, zipSize} or {ok:False, error, errorCode}
+    """
+    import shutil
+    import zipfile
+    try:
+        if not src_dir or not os.path.isdir(src_dir):
+            return {"ok": False, "error": f"ソースディレクトリが存在しません: {src_dir}"}
+
+        if not dst_zip_path:
+            return {"ok": False, "error": "zip 先パスが空です"}
+
+        dst_dir = os.path.dirname(dst_zip_path)
+        if dst_dir and not os.path.isdir(dst_dir):
+            return {
+                "ok":        False,
+                "error":     f"zip 先フォルダが存在しません: {dst_dir}",
+                "errorCode": "DIR_NOT_FOUND",
+            }
+
+        if os.path.exists(dst_zip_path):
+            dst_zip_path = unique_path(dst_zip_path)
+
+        file_count = 0
+        with zipfile.ZipFile(dst_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in os.listdir(src_dir):
+                src_file = os.path.join(src_dir, name)
+                if not os.path.isfile(src_file):
+                    continue
+                zf.write(src_file, arcname=name)
+                file_count += 1
+
+        zip_size = os.path.getsize(dst_zip_path)
+
+        if delete_src:
+            try:
+                shutil.rmtree(src_dir, ignore_errors=True)
+            except Exception:
+                pass  # 削除失敗は非致命
+
+        return {
+            "ok":        True,
+            "zipPath":   dst_zip_path,
+            "fileCount": file_count,
+            "zipSize":   zip_size,
+        }
+
+    except PermissionError as e:
+        return {"ok": False, "error": f"書き込み権限がありません: {e}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ---------------------------------------------------------------
 # メインループ
 # ---------------------------------------------------------------
@@ -1406,6 +1500,18 @@ def _dispatch_command(message):
         return handle_rename_file(
             message.get("srcPath", ""),
             message.get("dstPath", ""),
+        )
+
+    # v1.11.0: GROUP-26-split エクスポート分割出力用の一時ディレクトリ作成
+    elif cmd == "MKDIR_EXPORT_TMP":
+        return handle_mkdir_export_tmp(message.get("parentPath"))
+
+    # v1.11.0: GROUP-26-split ディレクトリを zip 化
+    elif cmd == "ZIP_DIRECTORY":
+        return handle_zip_directory(
+            message.get("srcDir", ""),
+            message.get("dstZipPath", ""),
+            bool(message.get("deleteSrc", True)),
         )
 
     else:

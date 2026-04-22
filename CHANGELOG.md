@@ -5,6 +5,56 @@
 
 ---
 
+## [1.30.0] - 2026-04-22
+
+### Added — エクスポート分割出力＋ zip 化＋「zip からインポート」（GROUP-26-split / GROUP-26-unzip）
+
+v1.29.1〜v1.29.2 の中間変数解放ではユーザー環境（377MB エクスポート、Firefox 全体 6.9GB 使用）の OOM を救済しきれなかったため、**V8 string max（~512MB）と OS メモリ逼迫の両方を本質的に回避する分割＋ zip 形式**へ移行。
+
+#### エクスポート
+- **分割 JSON**：カテゴリ別＋件数超過連番（`settings.json` / `history-NNN.json` / `thumbs-NNN.json`、500 件/chunk）＋先頭 `manifest.json`（formatVersion / borgestagVersion / exportedAt / files / totalEntries / thumbnailsIncluded）
+- **zip 化**：Native 側 `zipfile.ZIP_DEFLATED` で固める（拡張子 `.zip`、暗号化なし、非圧縮テキスト系は高圧縮率）
+- **AutoSave ON 経路**：`exportPath` 配下に直接 zip 配置（`borgestag-export-YYYYMMDD-HHMMSS.zip`）
+- **AutoSave OFF 経路**：`%TEMP%` 配下に一時 zip 作成 → `READ_FILE_CHUNKS_B64` で読込 → Blob 化 → `<a download>` でブラウザ DL → 一時 zip 自動削除
+- **ファイル名ローカル時刻化**：旧版 `toISOString()` は UTC 固定で JST と 9 時間ずれていたバグを修正。ファイル名は `now.getHours()` 等のローカル時刻で生成（JSON meta の `exportedAt` は互換性のため UTC 維持）
+- 各 chunk は 1-2MB 程度で V8 string allocation 限界を踏まない
+
+#### インポート
+- **拡張子自動判定**：入力 `<input type="file" accept=".json,.zip">`、`.zip` は JSZip 経路、`.json` は従来経路（完全互換維持）
+- **JSZip ブラウザ展開**：File オブジェクトを直接 JSZip.loadAsync → manifest.json 読込 → 各 chunk JSON を順次展開 → 旧 JSON 形式と同構造の擬似 payload を組立てて既存 importData の _meta チェック／マージ処理に流し込む
+- **旧形式完全互換**：v1.29.x 以前の単一 JSON バックアップは既存経路でそのままインポート可能
+
+### Added — 新コマンド（Native v1.11.0）
+- `MKDIR_EXPORT_TMP(parentPath)` — parentPath=null で `%TEMP%\borgestag_chunk_cache\export_tmp_<ms>\`、指定で `{parentPath}\_borgestag_export_tmp_<ms>\` に作成。既存 `_CHUNK_TEMP_DIR` 配下なので `DELETE_CHUNK_FILE` のパス制限を通過可
+- `ZIP_DIRECTORY(srcDir, dstZipPath, deleteSrc)` — `zipfile.ZipFile` で平坦 zip 化、deleteSrc=true で src ディレクトリ削除、既存 zip があれば `unique_path` で連番付与
+
+### Added — 拡張側 message handler（background.js）
+- `MKDIR_EXPORT_TMP` / `ZIP_DIRECTORY` の sendNative 中継
+- `READ_FILE_CHUNKS_B64` — 既存内部 helper `readNativeFileChunksB64` を message handler として公開（AutoSave OFF 経路で zip 読込用）
+- `DELETE_CHUNK_FILE` — 既存内部 helper `deleteNativeChunkFile` を message handler として公開
+
+### Added — 同梱ライブラリ
+- `src/vendor/jszip.min.js` — JSZip v3.10.1（MIT / GPLv3 dual license、約 95KB）、インポート時の zip 展開用
+
+### Changed
+- `src/settings/settings.js` — `exportData()` を分割書出版に全面改修、`importData()` に zip 分岐追加、`_parseZipImport` / `_assembleBlobFromB64Chunks` / `_downloadBlob` helper 新設
+- `src/settings/settings.html` — input `accept=".json,.zip"` に拡張、`<script src="../vendor/jszip.min.js">` 追加
+- `src/background/background.js` — `LONG_TIMEOUT_CMDS` に `ZIP_DIRECTORY` 追加（大容量 zip の deflate 処理で数十秒かかる可能性）
+- manifest.json: 1.29.2 → 1.30.0
+- **native/image_saver.py: 1.10.0 → 1.11.0**（新 2 関数追加）
+
+### Known Limitations
+- `formatVersion: 1` のみサポート。将来のフォーマット変更時は formatVersion インクリメント＋互換層追加で対応
+- zip 内のカスタムファイル（非 category のファイル）は無視される
+- インポート時の DL サイズ制限は JSZip のメモリ動作に依存（1GB 超の zip は未検証）
+
+### 影響調査
+- 04 G1 コマンド列挙に 2 新コマンド＋ 2 公開 handler 追加、G8 Python handler 列挙にも追加予定
+- WebExtension 本体の既存機能（保存、履歴、外部取り込み、ホバーボタン等）には影響なし
+- 旧 JSON 形式エクスポートは廃止（v1.30.0 以降は zip のみ出力、ただし旧 JSON のインポートは完全維持）
+
+---
+
 ## [1.29.2] - 2026-04-22
 
 ### Fixed

@@ -351,6 +351,33 @@ browser.runtime.onMessage.addListener(async (message) => {
       addLog("INFO", `外部取り込みリネーム: ${srcPath}`, `→ ${dstPath}`);
       return sendNative({ cmd: "RENAME_FILE", srcPath, dstPath });
     }
+    // v1.30.0 GROUP-26-split: エクスポート分割出力用の一時ディレクトリ作成
+    //   - parentPath=null で %TEMP%\borgestag_chunk_cache\export_tmp_<ts>\ に作成（AutoSave OFF 経路）
+    //   - parentPath 指定で {parentPath}\_borgestag_export_tmp_<ts>\ に作成（AutoSave ON 経路）
+    case "MKDIR_EXPORT_TMP": {
+      const { parentPath } = message;
+      return sendNative({ cmd: "MKDIR_EXPORT_TMP", parentPath: parentPath || null });
+    }
+    // v1.30.0 GROUP-26-split: ディレクトリを zip 化（zipfile.ZIP_DEFLATED、deleteSrc で src 削除）
+    case "ZIP_DIRECTORY": {
+      const { srcDir, dstZipPath, deleteSrc } = message;
+      if (!srcDir || !dstZipPath) {
+        return { ok: false, error: "ZIP_DIRECTORY: srcDir/dstZipPath は必須" };
+      }
+      return sendNative({ cmd: "ZIP_DIRECTORY", srcDir, dstZipPath, deleteSrc: deleteSrc !== false });
+    }
+    // v1.30.0 GROUP-26-split: エクスポート zip を chunk 読込（AutoSave OFF 経路、既存 readNativeFileChunksB64 を公開）
+    case "READ_FILE_CHUNKS_B64": {
+      const { path } = message;
+      if (!path) return { ok: false, error: "READ_FILE_CHUNKS_B64: path は必須" };
+      return readNativeFileChunksB64(path);
+    }
+    // v1.30.0 GROUP-26-split: 一時ファイル削除（Native 側で _CHUNK_TEMP_DIR 配下のみ許可）
+    case "DELETE_CHUNK_FILE": {
+      const { path } = message;
+      if (!path) return { ok: false, error: "DELETE_CHUNK_FILE: path は必須" };
+      return sendNative({ cmd: "DELETE_CHUNK_FILE", path });
+    }
     case "GET_STORAGE_SIZE":
       return getStorageSize();
     // ---- エクスプローラーで開く ----
@@ -466,6 +493,8 @@ function sendNative(payload) {
       "SAVE_IMAGE", "FETCH_PREVIEW", "READ_FILE_BASE64",
       // v1.22.9: 大容量 GIF 分割読み込み関連
       "READ_FILE_CHUNK", "MAKE_GIF_THUMB_FILE", "FETCH_PREVIEW_GIF",
+      // v1.30.0 GROUP-26-split: 大容量 zip 化（数百 MB の deflate 処理で数十秒かかる可能性）
+      "ZIP_DIRECTORY",
     ];
     const timeoutMs = LONG_TIMEOUT_CMDS.includes(payload.cmd) ? 300000 : 10000;
 

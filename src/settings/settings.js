@@ -737,74 +737,284 @@ async function exportData() {
     }
   }
 
-  // ---- ペイロード生成 ----
-  // 差分モード時は saveHistory・_idbThumbs を差分のみに置き換える
-  const exportedAt = new Date().toISOString();
-  // GROUP-26-mem (v1.29.2): const → let、json 作成後に null 化
-  let payload = {
-    _meta: {
-      exportedAt,
-      version:  "1.11.0",
-      app:      "image-saver-tags",
-      isDiff:   isDiff,
-      diffBase: isDiff ? stored.lastExportedAt : null,
-    },
-    ...stored,
-    saveHistory: exportHistory,
-    _idbThumbs:  exportThumbs,  // IDB サムネイル（差分インポート用）
-  };
+  // ---- ファイル名生成（GROUP-26-split / v1.30.0: ローカル時刻化で UTC ずれ解消） ----
+  const exportedAt = new Date().toISOString(); // JSON meta 用は UTC 維持
+  const now = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  const ts = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+  const prefix = isDiff ? "borgestag-diff" : "borgestag-export";
+  const zipName = `${prefix}-${ts}.zip`;
 
-  const json    = JSON.stringify(payload, null, 2);
-  const sizeKB  = (json.length / 1024).toFixed(1);
-  log(`📝 JSON 生成完了（${sizeKB} KB）`);
+  // ---- AutoSave 判定（stored null 化前にスナップショット） ----
+  const useAutoSave = !!(stored.exportPath && stored.exportAutoSave);
+  const exportPathSnapshot = stored.exportPath || "";
+  const diffBase = isDiff ? stored.lastExportedAt : null;
 
-  // GROUP-26-mem (v1.29.2): json 作成後、中間変数を即 null 化して V8 allocation 余地確保
-  // （sendNative 内の content JSON 化で ~550MB 要求されるため、~500MB 以上の解放が有効）
-  const thumbCount = exportThumbs.length;
-  payload = null;
-  stored = null;
-  idbThumbs = null;
-  exportHistory = null;
-  exportThumbs = null;
+  // ---- 一時ディレクトリ作成（GROUP-26-split） ----
+  const mkRes = await browser.runtime.sendMessage({
+    type: "MKDIR_EXPORT_TMP",
+    parentPath: useAutoSave ? exportPathSnapshot : null,
+  });
+  if (!mkRes?.ok) {
+    logError(`一時ディレクトリ作成失敗: ${mkRes?.error || "不明"}`);
+    return;
+  }
+  const tempDir = mkRes.tempDir;
+  log(`📁 一時ディレクトリ: ${tempDir}`);
 
-  const prefix = isDiff ? "image-saver-diff" : "image-saver-backup";
-  const ts     = exportedAt.slice(0, 19).replace(/[T:]/g, "-");
-  const name   = `${prefix}-${ts}.json`;
+  // ---- 分割書出（settings / history-NNN / thumbs-NNN / manifest） ----
+  const CHUNK_SIZE = 500;
+  const files = [];
 
-  // ---- エクスポート先 + 即保存オプションの確認 ----
-  const { exportPath, exportAutoSave } = await browser.storage.local.get(["exportPath", "exportAutoSave"]);
-  if (exportPath && exportAutoSave) {
-    // Native Messaging 経由でファイルに直接書き出す
-    const savePath = exportPath.replace(/[\\/]+$/, "") + "\\" + name;
-    log("💾 ファイル書き込み中...");
-    const res = await browser.runtime.sendMessage({
+  // settings.json（設定キー群のみ、saveHistory 除外）
+  const settingsOnly = { ...stored };
+  delete settingsOnly.saveHistory;
+  const settingsName = "settings.json";
+  const settingsRes = await browser.runtime.sendMessage({
+    type: "WRITE_FILE",
+    path: `${tempDir}\\${settingsName}`,
+    content: JSON.stringify(settingsOnly, null, 2),
+  });
+  if (!settingsRes?.ok) {
+    logError(`settings.json 書込失敗: ${settingsRes?.error || ""}`);
+    return;
+  }
+  files.push({ category: "settings", path: settingsName });
+  stored = null; // GROUP-26-mem: settings 書出後は不要
+
+  // history-NNN.json 分割
+  const historyTotal = exportHistory.length;
+  for (let i = 0, n = 1; i < historyTotal; i += CHUNK_SIZE, n++) {
+    const chunk = exportHistory.slice(i, i + CHUNK_SIZE);
+    const name = `history-${String(n).padStart(3, "0")}.json`;
+    const chunkRes = await browser.runtime.sendMessage({
       type: "WRITE_FILE",
-      path: savePath,
-      content: json,
+      path: `${tempDir}\\${name}`,
+      content: JSON.stringify(chunk, null, 2),
     });
-    if (res?.ok) {
-      // 差分エクスポート完了時のみ lastExportedAt を更新（全エクスポートでは更新しない）
-      if (isDiff) await browser.storage.local.set({ lastExportedAt: exportedAt });
-      log(`✅ エクスポート完了: ${savePath}（サムネイル ${thumbCount} 件含む）`);
-      showCenterToast(`✅ エクスポートしました\n${savePath}\n（サムネイル ${thumbCount} 件含む）`);
-    } else {
-      const msg = res?.errorCode === "DIR_NOT_FOUND"
-        ? `⚠️ フォルダが存在しません: ${exportPath}\n設定画面でエクスポート先を確認してください`
-        : `⚠️ 直接保存に失敗しました。ダウンロードに切り替えます: ${res?.error || ""}`;
-      logError(msg);
-      showStatus(msg, true);
-      _downloadJson(json, name, thumbCount);
-      if (isDiff) await browser.storage.local.set({ lastExportedAt: exportedAt });
+    if (!chunkRes?.ok) {
+      logError(`${name} 書込失敗: ${chunkRes?.error || ""}`);
+      return;
     }
+    files.push({ category: "history", path: name, entries: chunk.length });
+    log(`✏️ ${name} 書込（${Math.min(i + CHUNK_SIZE, historyTotal)}/${historyTotal}）`);
+  }
+  exportHistory = null;
+
+  // thumbs-NNN.json 分割（サムネ ON 時のみ）
+  const thumbsTotal = exportThumbs.length;
+  if (exportThumbsEnabled && thumbsTotal > 0) {
+    for (let i = 0, n = 1; i < thumbsTotal; i += CHUNK_SIZE, n++) {
+      const chunk = exportThumbs.slice(i, i + CHUNK_SIZE);
+      const name = `thumbs-${String(n).padStart(3, "0")}.json`;
+      const chunkRes = await browser.runtime.sendMessage({
+        type: "WRITE_FILE",
+        path: `${tempDir}\\${name}`,
+        content: JSON.stringify(chunk, null, 2),
+      });
+      if (!chunkRes?.ok) {
+        logError(`${name} 書込失敗: ${chunkRes?.error || ""}`);
+        return;
+      }
+      files.push({ category: "thumbs", path: name, entries: chunk.length });
+      log(`✏️ ${name} 書込（${Math.min(i + CHUNK_SIZE, thumbsTotal)}/${thumbsTotal}）`);
+    }
+  }
+  exportThumbs = null;
+  idbThumbs = null;
+
+  // manifest.json 書出
+  const manifestData = {
+    formatVersion: 1,
+    borgestagVersion: "1.30.0",
+    app: "image-saver-tags",
+    exportedAt,
+    isDiff,
+    diffBase,
+    chunkSize: CHUNK_SIZE,
+    thumbnailsIncluded: exportThumbsEnabled,
+    files,
+    totalEntries: { history: historyTotal, thumbs: thumbsTotal },
+  };
+  const manifestRes = await browser.runtime.sendMessage({
+    type: "WRITE_FILE",
+    path: `${tempDir}\\manifest.json`,
+    content: JSON.stringify(manifestData, null, 2),
+  });
+  if (!manifestRes?.ok) {
+    logError(`manifest.json 書込失敗: ${manifestRes?.error || ""}`);
     return;
   }
 
-  _downloadJson(json, name, thumbCount);
-  // 差分エクスポート完了時のみ lastExportedAt を更新（全エクスポートでは更新しない）
+  // ---- zip 化（Native 側 ZIP_DEFLATED、deleteSrc=true で一時 dir 削除） ----
+  log("🗜 zip 化中...");
+  const zipPath = useAutoSave
+    ? `${exportPathSnapshot.replace(/[\\/]+$/, "")}\\${zipName}`
+    : `${tempDir}_tmp_${ts}.zip`; // OFF 経路：tempDir と同階層の一時 zip
+  const zipRes = await browser.runtime.sendMessage({
+    type: "ZIP_DIRECTORY",
+    srcDir: tempDir,
+    dstZipPath: zipPath,
+    deleteSrc: true,
+  });
+  if (!zipRes?.ok) {
+    logError(`zip 生成失敗: ${zipRes?.error || ""}`);
+    return;
+  }
+  const actualZipPath = zipRes.zipPath;
+  const zipSizeMB = (zipRes.zipSize / 1024 / 1024).toFixed(2);
+  log(`🗜 zip 生成完了（${zipRes.fileCount} ファイル、${zipSizeMB} MB）`);
+
+  if (useAutoSave) {
+    if (isDiff) await browser.storage.local.set({ lastExportedAt: exportedAt });
+    log(`✅ エクスポート完了: ${actualZipPath}`);
+    showCenterToast(`✅ エクスポートしました\n${actualZipPath}\n（${zipSizeMB} MB）`);
+    return;
+  }
+
+  // ---- AutoSave OFF: zip を chunk で読み込み → Blob DL → 一時 zip 削除 ----
+  log("💾 ダウンロード準備中...");
+  const chunkReadRes = await browser.runtime.sendMessage({
+    type: "READ_FILE_CHUNKS_B64",
+    path: actualZipPath,
+  });
+  if (!chunkReadRes?.ok) {
+    logError(`zip 読込失敗: ${chunkReadRes?.error || ""}`);
+    return;
+  }
+  const blob = _assembleBlobFromB64Chunks(chunkReadRes.chunksB64, "application/zip");
+  browser.runtime.sendMessage({ type: "DELETE_CHUNK_FILE", path: actualZipPath }).catch(() => {});
+  _downloadBlob(blob, zipName);
+
   if (isDiff) await browser.storage.local.set({ lastExportedAt: exportedAt });
-  log(`✅ ダウンロード開始（サムネイル ${thumbCount} 件含む）`);
+  log(`✅ ダウンロード開始: ${zipName}（${zipSizeMB} MB）`);
 }
 
+// GROUP-26-split (v1.30.0): Base64 chunk 配列から Blob を組み立てる
+function _assembleBlobFromB64Chunks(chunksB64, mime) {
+  const arrays = [];
+  for (const b64 of chunksB64) {
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    arrays.push(arr);
+  }
+  return new Blob(arrays, { type: mime || "application/octet-stream" });
+}
+
+// GROUP-26-split (v1.30.0): Blob をブラウザダウンロード
+function _downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+// GROUP-26-unzip (v1.30.0): .zip ファイルを JSZip で展開し、旧 JSON 形式と同構造の payload を組立てる
+// 既存 importData の後続ロジック（_meta チェック／storage マージ／IDB サムネ復元）をそのまま流用可能にする
+async function _parseZipImport(file, log, logError) {
+  if (typeof JSZip === "undefined") {
+    logError("JSZip 未ロード（vendor/jszip.min.js 読み込み失敗）");
+    return null;
+  }
+  log("🗜 zip 展開中...");
+  let zip;
+  try {
+    zip = await JSZip.loadAsync(file);
+  } catch (err) {
+    logError(`zip 読込失敗: ${err?.message || String(err)}`);
+    return null;
+  }
+
+  const manifestFile = zip.file("manifest.json");
+  if (!manifestFile) {
+    logError("manifest.json が zip 内に見つかりません（非対応 zip 形式）");
+    return null;
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(await manifestFile.async("string"));
+  } catch (err) {
+    logError(`manifest.json 解析失敗: ${err?.message || String(err)}`);
+    return null;
+  }
+  log(`📋 manifest: formatVersion=${manifest.formatVersion} / ${manifest.files?.length || 0} ファイル`);
+
+  if (manifest.formatVersion !== 1) {
+    logError(`未対応フォーマット: formatVersion=${manifest.formatVersion}`);
+    return null;
+  }
+
+  // settings.json
+  let settings = {};
+  const settingsFile = zip.file("settings.json");
+  if (settingsFile) {
+    try {
+      settings = JSON.parse(await settingsFile.async("string"));
+      log(`✅ settings.json 読込`);
+    } catch (err) {
+      logError(`settings.json 解析失敗: ${err?.message || String(err)}`);
+      return null;
+    }
+  }
+
+  // history-NNN.json を順次連結（manifest.files の順序を維持）
+  const allHistory = [];
+  const historyFiles = (manifest.files || []).filter(f => f.category === "history");
+  for (const f of historyFiles) {
+    const hf = zip.file(f.path);
+    if (!hf) { log(`⚠️ ${f.path} が zip 内に見つかりません（スキップ）`); continue; }
+    try {
+      const items = JSON.parse(await hf.async("string"));
+      if (Array.isArray(items)) allHistory.push(...items);
+      log(`✏️ ${f.path} 読込（${items.length} 件）`);
+    } catch (err) {
+      logError(`${f.path} 解析失敗: ${err?.message || String(err)}`);
+      return null;
+    }
+  }
+
+  // thumbs-NNN.json を順次連結
+  const allThumbs = [];
+  const thumbsFiles = (manifest.files || []).filter(f => f.category === "thumbs");
+  for (const f of thumbsFiles) {
+    const tf = zip.file(f.path);
+    if (!tf) { log(`⚠️ ${f.path} が zip 内に見つかりません（スキップ）`); continue; }
+    try {
+      const items = JSON.parse(await tf.async("string"));
+      if (Array.isArray(items)) allThumbs.push(...items);
+      log(`✏️ ${f.path} 読込（${items.length} 件）`);
+    } catch (err) {
+      logError(`${f.path} 解析失敗: ${err?.message || String(err)}`);
+      return null;
+    }
+  }
+
+  // 旧 JSON 形式と同構造の擬似 payload を組立てる
+  const pseudoPayload = {
+    _meta: {
+      exportedAt: manifest.exportedAt,
+      version:    manifest.borgestagVersion || "1.30.0",
+      app:        manifest.app || "image-saver-tags",
+      isDiff:     !!manifest.isDiff,
+      diffBase:   manifest.diffBase || null,
+    },
+    ...settings,
+    saveHistory: allHistory,
+    _idbThumbs:  allThumbs,
+  };
+  log(`✅ zip 展開完了（history ${allHistory.length} 件、thumbs ${allThumbs.length} 件）`);
+  return pseudoPayload;
+}
+
+// GROUP-26-split (v1.30.0): 旧 v1.29.2 までの単一 JSON エクスポート経路は廃止、
+// 本ファイルの exportData は zip 形式のみを出力する。_downloadJson は旧 JSON のインポート互換
+// （importData 経由）とは無関係なので削除可能。残したままでも呼び出し側がなく dead code。
+// 互換性のため当面は関数のみ残す（next minor で削除検討）。
 function _downloadJson(json, name, thumbCount) {
   const blob = new Blob([json], { type: "application/json" });
   const url  = URL.createObjectURL(blob);
@@ -853,11 +1063,17 @@ async function importData(e) {
 
   let parsed;
   try {
-    const text = await file.text();
-    parsed = JSON.parse(text);
-    log(`✅ JSON 解析成功`);
+    // GROUP-26-unzip (v1.30.0): .zip は分割形式として JSZip で展開、.json は従来の単一 JSON
+    if (file.name.toLowerCase().endsWith(".zip")) {
+      parsed = await _parseZipImport(file, log, logError);
+      if (!parsed) return; // エラーは helper 内で log 済
+    } else {
+      const text = await file.text();
+      parsed = JSON.parse(text);
+      log(`✅ JSON 解析成功`);
+    }
   } catch (err) {
-    logError(`JSON 解析失敗: ${err.message}`);
+    logError(`解析失敗: ${err.message}`);
     return;
   }
 
