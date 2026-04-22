@@ -51,12 +51,41 @@ browser.contextMenus.create({
   contexts: ["image"],
 });
 
+// GROUP-2-a: ツールバーアイコン右クリック → ホバーボタン一時非表示トグル（v1.29.0）
+browser.contextMenus.create({
+  id: "toggle-hover-buttons-temp-hidden",
+  title: "ホバーボタンを一時非表示にする",
+  contexts: ["browser_action"],
+});
+
+async function refreshHoverHiddenBadge() {
+  const { hoverButtonsTempHidden } = await browser.storage.local.get("hoverButtonsTempHidden");
+  const hidden = !!hoverButtonsTempHidden;
+  browser.browserAction.setBadgeText({ text: hidden ? "OFF" : "" });
+  browser.browserAction.setBadgeBackgroundColor({ color: "#c0392b" });
+  try {
+    await browser.contextMenus.update("toggle-hover-buttons-temp-hidden", {
+      title: hidden ? "ホバーボタンを表示する" : "ホバーボタンを一時非表示にする",
+    });
+  } catch (_) { /* メニュー登録前の初期呼出しで発生しうるため無視 */ }
+}
+refreshHoverHiddenBadge();
+browser.storage.onChanged.addListener((changes) => {
+  if ("hoverButtonsTempHidden" in changes) refreshHoverHiddenBadge();
+});
+
 // アイコンクリックで設定タブを開く（popup を使わない）
 browser.browserAction.onClicked.addListener(() => {
   browser.runtime.openOptionsPage();
 });
 
-browser.contextMenus.onClicked.addListener((info, tab) => {
+browser.contextMenus.onClicked.addListener(async (info, tab) => {
+  // GROUP-2-a: ホバーボタン一時非表示トグル（v1.29.0）
+  if (info.menuItemId === "toggle-hover-buttons-temp-hidden") {
+    const { hoverButtonsTempHidden } = await browser.storage.local.get("hoverButtonsTempHidden");
+    await browser.storage.local.set({ hoverButtonsTempHidden: !hoverButtonsTempHidden });
+    return;
+  }
   if (info.menuItemId !== "save-image-with-tags") return;
   browser.tabs.sendMessage(tab.id, {
     type: "OPEN_SAVE_MODAL",

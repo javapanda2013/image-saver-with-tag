@@ -686,6 +686,7 @@ async function exportData() {
     "groupReadDirection",
     "instantSaveEnabled",
     "minimizeAfterSave",
+    "hoverButtonsTempHidden",
     "tagSortOrder",
     "globalAuthors",
     "authorDestinations",
@@ -1067,6 +1068,13 @@ async function importData(e) {
       await browser.storage.local.set({ minimizeAfterSave: parsed.minimizeAfterSave });
       log(`🗕 minimizeAfterSave: ${parsed.minimizeAfterSave}`);
     } catch (err) { logError(`minimizeAfterSave の保存に失敗: ${err.message}`); return; }
+  }
+  // ---- hoverButtonsTempHidden ----（GROUP-2-a / v1.29.0）
+  if (parsed.hoverButtonsTempHidden !== undefined) {
+    try {
+      await browser.storage.local.set({ hoverButtonsTempHidden: !!parsed.hoverButtonsTempHidden });
+      log(`🙈 hoverButtonsTempHidden: ${!!parsed.hoverButtonsTempHidden}`);
+    } catch (err) { logError(`hoverButtonsTempHidden の保存に失敗: ${err.message}`); return; }
   }
 
   // ---- filenameIncludeTag ----

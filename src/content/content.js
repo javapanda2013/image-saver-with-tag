@@ -42,6 +42,19 @@ browser.storage.onChanged.addListener((changes) => {
   }
 });
 
+// GROUP-2-a: ホバーボタン一時非表示トグル（v1.29.0）
+// ツールバーアイコン右クリック → contextMenu トグルで storage.local.hoverButtonsTempHidden を切替
+let hoverButtonsTempHidden = false;
+browser.storage.local.get("hoverButtonsTempHidden").then(r => {
+  hoverButtonsTempHidden = !!r.hoverButtonsTempHidden;
+});
+browser.storage.onChanged.addListener((changes) => {
+  if ("hoverButtonsTempHidden" in changes) {
+    hoverButtonsTempHidden = !!changes.hoverButtonsTempHidden.newValue;
+    if (hoverWrap) hoverWrap.style.display = hoverButtonsTempHidden ? "none" : "flex";
+  }
+});
+
 function updateInstantBtn() {
   const btn = hoverWrap?.querySelector("#__image-saver-instant-btn__");
   if (btn) btn.style.display = instantSaveEnabled ? "" : "none";
@@ -129,6 +142,7 @@ function btnStyle(bg) {
 }
 
 function showAt(img) {
+  if (hoverButtonsTempHidden) return; // GROUP-2-a: 一時非表示中はホバーボタンを出さない
   const rect = img.getBoundingClientRect();
   const wrap = getWrap();
   currentImg = img;

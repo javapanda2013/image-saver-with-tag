@@ -5,6 +5,28 @@
 
 ---
 
+## [1.29.0] - 2026-04-22
+
+### Added
+- **ホバー保存ボタンの一時非表示トグル**（GROUP-2-a）
+  - Firefox ツールバーの BorgesTag アイコンを**右クリック**するとコンテキストメニュー「ホバーボタンを一時非表示にする」が表示され、クリックで `⚡ 即保存` / `💾 保存` 両ボタンを画像ホバー時に表示しないモードへ切替。
+  - 非表示モード中はアイコンにバッジ `OFF`（赤背景 `#c0392b`）で明示。
+  - 再度同メニュー（「ホバーボタンを表示する」にトグル文言変更）をクリックすると通常モードへ復帰。自動解除なし（手動のみ）。
+  - 一時非表示状態は `storage.local.hoverButtonsTempHidden`（boolean）に永続化。ブラウザ再起動後も維持。
+  - 既存 `instantSaveEnabled`（⚡ のみ制御）とは独立。本機能は wrap 全体制御で `⚡` `💾` 両方を一括切替。
+
+### Changed
+- **エクスポート/インポート対応**：`hoverButtonsTempHidden` をエクスポート対象配列に追加、インポート復元ブロックも追加（既存 UI フラグ `instantSaveEnabled` / `minimizeAfterSave` と同パターン）。
+- manifest.json: 1.28.2 → 1.29.0
+- **native/image_saver.py は変更なし**（version 1.10.0 据え置き）。
+
+### 実装詳細
+- `content.js`：`hoverButtonsTempHidden` 宣言＋ `storage.local.get` 初期読込、`storage.onChanged` リスナーでリアルタイム反映（即時 wrap 切替）、`showAt()` 冒頭で early return。
+- `background.js`：`contextMenus.create({ contexts: ["browser_action"] })` で右クリックメニュー新設、`refreshHoverHiddenBadge()` で `setBadgeText` / `setBadgeBackgroundColor` / menu title を storage と同期、`contextMenus.onClicked` 内にトグル分岐追加。
+- `settings.js`：エクスポート対象配列（`instantSaveEnabled` の直後）＋インポート復元ブロック（`minimizeAfterSave` の直後）に `hoverButtonsTempHidden` を追加。
+
+---
+
 ## [1.28.2] - 2026-04-21
 
 ### Changed
