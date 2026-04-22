@@ -178,27 +178,32 @@ browser.tabs.onAttached.addListener(async (tabId, { newWindowId }) => {
 });
 
 // ----------------------------------------------------------------
-// WRITE_FILE 専用 handler（v1.30.4 GROUP-26-slice-3）
+// onMessage handler — 単一 listener 構成（v1.30.5 GROUP-26-slice-4）
 // ----------------------------------------------------------------
-// 下記の async onMessage handler に WRITE_FILE case を置くと、
-// async 関数の仕様上 Promise 解決まで message 引数（= message.content の 50-62MB）が
-// 保持される。エクスポート時に chunk 数分だけ文字列が GC 阻害されるため、
-// WRITE_FILE だけ**非-async handler** に切り離して handler 関数は同期で抜けるようにする。
-// こうすることで Firefox の listener dispatcher が handler を呼び出した直後に
-// handler frame を解放、引数 message も即 GC 対象となる（仮説 D、07 §8）。
-// 他の handler は undefined を return するため、Firefox の runtime.onMessage 仕様上
-// 次の async handler に委譲される。
-browser.runtime.onMessage.addListener((message) => {
-  if (message && message.type === "WRITE_FILE") {
+// v1.30.4 では WRITE_FILE を非-async handler、その他を async handler の
+// 2 listener に分離したが、async 関数は case 不一致でも Promise<undefined> を返すため、
+// Firefox の onMessage dispatcher が async 側の Promise<undefined> を先に resolve →
+// sendMessage の応答が undefined になり「settings.json 書込失敗」エラー（v1.30.5 で修正）。
+//
+// 対策：単一 listener にして WRITE_FILE は非-async 同期 return、他は async handler に委譲。
+// WRITE_FILE は outer listener が同期で抜けて writeFile の Promise のみ返すため、
+// message 引数（= message.content 50-62MB）は outer 関数終了時に参照解放される（仮説 D）。
+browser.runtime.onMessage.addListener((message, sender) => {
+  if (!message) return;
+
+  // WRITE_FILE は非-async path（message 引数を即 GC 可能に）
+  if (message.type === "WRITE_FILE") {
     return writeFile(message.path, message.content);
   }
-  // WRITE_FILE 以外は undefined を return → 下記の async handler に委譲
+
+  // その他は async handler に委譲
+  return handleAsyncMessage(message, sender);
 });
 
 // ----------------------------------------------------------------
-// Content Script からのメッセージを受信
+// Content Script からのメッセージを受信（async 本体）
 // ----------------------------------------------------------------
-browser.runtime.onMessage.addListener(async (message) => {
+async function handleAsyncMessage(message, sender) {
   switch (message.type) {
     case "OPEN_MODAL_WINDOW":
       openModalWindow(message.imageUrl, message.pageUrl);
@@ -435,7 +440,7 @@ browser.runtime.onMessage.addListener(async (message) => {
     default:
       break;
   }
-});
+}
 
 // ----------------------------------------------------------------
 // Native Messaging ヘルパー

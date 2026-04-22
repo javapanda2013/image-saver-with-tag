@@ -5,6 +5,56 @@
 
 ---
 
+## [1.30.5] - 2026-04-23
+
+### Fixed — v1.30.4 の WRITE_FILE listener race を修正（GROUP-26-slice-4、hotfix）
+
+#### 症状
+v1.30.4 適用後にエクスポート実行すると、**settings.json 書出ステップで即エラー**「❌ settings.json 書込失敗: 」（エラーメッセージ空）。Native 側のログには `Native応答: WRITE_FILE {"ok":true}` と成功が記録されていたため、Native 書込自体は成功していたが **settings.js 側が undefined 応答を受け取り失敗判定**していた。
+
+#### 原因
+v1.30.4 で WRITE_FILE を**非-async handler に分離**し、async handler から case を削除した。しかし **async 関数は case 不一致でも常に `Promise<undefined>` を返す**ため、`browser.runtime.onMessage` の複数 listener が存在する状況で：
+
+- 非-async handler：`writeFile()` の Promise（Native Messaging 経由で ~100ms で resolve）
+- async handler：`Promise<undefined>`（即 microtask で resolve）
+
+後者が**先に resolve**するため、Firefox の onMessage dispatcher が `undefined` を応答として採用。sendMessage 側は `settingsRes` が undefined になり `settingsRes?.ok` 判定で失敗。
+
+v1.30.4 のコメントに書いた「他の handler は undefined を return するため、次の async handler に委譲される」という前提は**誤り**。async 関数の戻り値は Promise にラップされるため「return しない＝undefined」ではなく「return しない＝Promise<undefined>」となり、これは listener の「応答あり」として扱われる。
+
+#### 対策
+**単一 listener に統合**：
+- outer listener を非-async にし、WRITE_FILE は `writeFile()` の Promise を直接 return（同期で抜けて message 引数を即 GC 可能に）
+- それ以外は `handleAsyncMessage(message, sender)` へ委譲（async 関数として切り出し）
+- listener が 1 個しかないため race 発生不可。WRITE_FILE の非-async メリット（仮説 D 対策）は維持。
+
+```js
+browser.runtime.onMessage.addListener((message, sender) => {
+  if (!message) return;
+  if (message.type === "WRITE_FILE") {
+    return writeFile(message.path, message.content);  // 非-async 同期 return
+  }
+  return handleAsyncMessage(message, sender);  // 他は async に委譲
+});
+
+async function handleAsyncMessage(message, sender) {
+  switch (message.type) { /* 全 case */ }
+}
+```
+
+#### 記録
+- 教訓：`browser.runtime.onMessage` で**複数 listener が存在する状況で async listener を使うと、case 不一致時の `Promise<undefined>` が他 listener の Promise より先に resolve してレース負けする**。単一 listener に統合するのが安全。
+- 07 §8 / 08 / `memory/feedback_memory_debug.md` へ追記。
+
+#### 動作確認
+- **Native 変更なし**（native v1.11.1 維持）
+- エクスポート実行し `settings.json 書込失敗` エラーが出ないこと
+- 続いて history-NNN.json / thumbs-NNN.json も成功
+- 最終的に zip ファイルが生成されること
+- 仮説 D 本来の効果（実行後 50-62MB × 7 個 = 734MB 残留が 0〜100MB に改善）は v1.30.5 で初めて検証可能（v1.30.4 は排他エラーで WRITE_FILE 自体が機能していなかったため仮説 D の是非不明）
+
+---
+
 ## [1.30.4] - 2026-04-23
 
 ### Fixed — WRITE_FILE を非-async handler に切り離し（GROUP-26-slice-3、仮説 D）
