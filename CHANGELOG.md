@@ -5,6 +5,48 @@
 
 ---
 
+## [1.30.7] - 2026-04-23
+
+### Changed — sendNative で payload / payloadJson を null 代入（GROUP-26-slice-6）
+
+#### 背景（v1.30.6 診断結果）
+WeakRef + FinalizationRegistry による計測で以下が確定：
+- **payload_alive: 7/7 件 true** → 各 chunk の payload オブジェクトが実行後も retain
+- **json_probe_alive: 7/7 件 false** → sendNative scope の whole-scope closure capture は起きていない
+
+つまり、payload への**特定の強参照 1 本**がどこかに通っており、そこから `payload.content`（50MB 級文字列）も延命 → 7 chunk × 約 100MB = 約 735MB の残留という構造。
+
+#### 対策
+`port.postMessage(payload)` の直後に `payload = null` / `payloadJson = null` の代入を追加し、sendNative scope から payload および payloadJson への JS 参照を明示的に切断：
+
+```js
+port.postMessage(payload);
+
+// v1.30.7 GROUP-26-slice-6
+payload = null;
+payloadJson = null;
+```
+
+`payload` は関数パラメータ（再代入可）、`payloadJson` は既に `let`。
+
+#### 想定される効果
+- sendNative scope 由来の参照は確実に切れる
+- Firefox 内部保持・writeFile activation record 一時参照・Promise chain 経由のいずれが真因でも、JS 側参照が 1 本減ることで GC 到達可能になる可能性
+- 効果なければ容疑者 1（Firefox port 内部保持）・容疑者 3（writeFile async activation）等の追加仮説を `09_メモリ調査ツール候補.md` のツール群で継続調査
+
+#### Removed
+- v1.30.6 の WeakRef 診断コード（`globalThis.__exportDebug` とその関連関数 / sendNative 内の WeakRef 計測ブロック）は本リリースで削除
+
+Native 変更なし（native v1.11.1 維持）。
+
+#### 動作確認項目
+- エクスポート実行し正常完走すること
+- エクスポート完了後に `about:memory` → Minimize memory usage → 再測定
+- 実行前 141MB → 実行後（v1.30.5 残留 735MB）→ **v1.30.7 残留が減少するか**
+- 減らなければ別仮説へ移行（09 資料のツールで追加調査）
+
+---
+
 ## [1.30.6] - 2026-04-23（診断リリース、修正なし）
 
 ### Added — 診断コード：WeakRef による payload / payloadJson 生存追跡（GROUP-26-slice-5）
