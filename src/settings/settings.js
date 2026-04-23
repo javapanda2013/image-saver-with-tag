@@ -743,9 +743,13 @@ async function exportData() {
   const diffBase = isDiff ? stored.lastExportedAt : null;
 
   // ---- 一時ディレクトリ作成（GROUP-26-split） ----
+  // v1.30.10 GROUP-26-cleanup-2: AutoSave でも常に %TEMP% 配下に chunk を作成。
+  // 従来は AutoSave ON で exportPath（OneDrive 等）配下に chunk を置いていたが、
+  // OneDrive の同期ロックで _retry_rmtree（5 回 × 500ms）が間に合わず空フォルダが残留していた。
+  // %TEMP% はローカル・同期対象外のため確実に削除でき、zip 最終出力はそのまま exportPath に書ける。
   const mkRes = await browser.runtime.sendMessage({
     type: "MKDIR_EXPORT_TMP",
-    parentPath: useAutoSave ? exportPathSnapshot : null,
+    parentPath: null, // 常に %TEMP%\\borgestag_chunk_cache\\ 配下
   });
   if (!mkRes?.ok) {
     logError(`一時ディレクトリ作成失敗: ${mkRes?.error || "不明"}`);

@@ -5,6 +5,34 @@
 
 ---
 
+## [1.30.10] - 2026-04-23
+
+### Changed — エクスポート chunk 一時フォルダを常に %TEMP% 配下に配置（GROUP-26-cleanup-2）
+
+#### 背景
+v1.30.1 で `_retry_rmtree`（5 回 × 500ms）による一時フォルダ削除リトライを実装したが、ユーザー環境で AutoSave ON 時に exportPath（OneDrive 同期対象）配下で作業していたため、OneDrive の同期ロックが 2.5 秒で解放されず**複数回のエクスポートすべてで空フォルダ（`_borgestag_export_tmp_*`）残留**を実測確認。
+
+#### 対策
+`settings.js` が `MKDIR_EXPORT_TMP` を呼び出す際、**AutoSave ON/OFF に関わらず常に `parentPath: null`** を渡すように変更。これにより chunk の書出先は常に `%TEMP%\borgestag_chunk_cache\export_tmp_<ts>\`（ローカル、同期対象外）になる。
+
+zip の最終出力先は従来どおり：
+- AutoSave ON：`exportPath\borgestag-export-<ts>.zip`（OneDrive 可）
+- AutoSave OFF：`%TEMP%\borgestag_chunk_cache\export_tmp_<ts>\borgestag-export-<ts>.zip`（READ_FILE_CHUNKS_B64 で読み出して Blob DL）
+
+chunk は中間ファイルなので %TEMP% で十分、zip 出力がクロスドライブでも書込量は同一で実害なし。
+
+#### 効果
+- OneDrive 同期ロックによる空フォルダ残留を根本回避
+- 既に残っている `_borgestag_export_tmp_*` フォルダは本リリース以降増えなくなる（既存分はユーザー側で手動削除推奨）
+
+#### 動作確認項目
+- **Native 変更なし**（native v1.11.1 維持、`handle_mkdir_export_tmp` は既に parent_path=None 経路をサポート済）
+- エクスポート後、exportPath 配下に空フォルダ `_borgestag_export_tmp_*` が新規作成されていないこと
+- zip ファイル自体は従来どおり exportPath に出力されること
+- AutoSave OFF の挙動（Blob DL）も従来どおり動作
+
+---
+
 ## [1.30.9] - 2026-04-23
 
 ### Fixed — v1.30.8 の IDB トランザクション寿命エラーを hotfix（GROUP-26-mem-2 hotfix）
