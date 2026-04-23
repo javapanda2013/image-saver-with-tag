@@ -1,0 +1,213 @@
+/**
+ * video_convert.js
+ * ----------------------------------------------------------------
+ * Phase 1 MVP：動画 → GIF 変換モーダル
+ * GROUP-15-impl-A-phase1（v1.31.0 ～）
+ *
+ * 処理フロー：
+ * 1. storage.local._pendingVideoConvert から video メタ情報を取得
+ * 2. <video> 要素でプレビュー
+ * 3. ユーザーが「GIF に変換」ボタンをクリック
+ * 4. gifshot.createGIF({video: [videoUrl], ...fixed params}, callback) 実行
+ * 5. progressCallback で進捗更新
+ * 6. callback で obj.image（dataURL）取得
+ * 7. _pendingModal に dataURL を格納し、OPEN_MODAL_WINDOW で既存の保存モーダル起動
+ * 8. 自ウィンドウは自動 close
+ *
+ * Phase 1 固定パラメータ：
+ * - 長さ 20 秒（numFrames=200, interval=0.1）
+ * - fps 10（interval=0.1）
+ * - 幅 480px（元動画のアスペクト比維持、元幅が 480 未満なら元幅維持）
+ * - sampleInterval 10（gifshot 既定）
+ * - numWorkers 2（gifshot 既定）
+ *
+ * 制限事項（Phase 2 で対応予定）：
+ * - 直 mp4 URL のみ対応（blob: / MSE URL は非対応、content.js でのフレーム抽出方式は Phase 2）
+ * - 変換オプション可変 UI なし（Phase 2 で settings タブに追加）
+ * - 進捗永続化なし（ウィンドウ閉じると中断）
+ */
+
+// ================================================================
+// 固定パラメータ（Phase 1 MVP）
+// ================================================================
+const PHASE1_PARAMS = {
+  DURATION_SEC: 20,
+  FPS: 10,
+  MAX_WIDTH: 480,
+  SAMPLE_INTERVAL: 10,
+  NUM_WORKERS: 2,
+};
+
+// ================================================================
+// ユーティリティ
+// ================================================================
+function log(msg, kind) {
+  const el = document.getElementById("log");
+  el.textContent = msg;
+  el.className = "log" + (kind ? " " + kind : "");
+  // console にも出す
+  (kind === "error" ? console.error : console.log)(`[video_convert] ${msg}`);
+}
+
+function updateProgress(ratio) {
+  const wrap = document.getElementById("progress-wrap");
+  const bar = document.getElementById("progress-bar");
+  const label = document.getElementById("progress-label");
+  wrap.classList.add("active");
+  const pct = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+  bar.style.width = pct + "%";
+  label.textContent = pct + "%";
+}
+
+function hideProgress() {
+  document.getElementById("progress-wrap").classList.remove("active");
+}
+
+function computeGifSize(origWidth, origHeight) {
+  if (!origWidth || !origHeight) {
+    return { w: PHASE1_PARAMS.MAX_WIDTH, h: Math.round(PHASE1_PARAMS.MAX_WIDTH * 9 / 16) };
+  }
+  const targetW = Math.min(origWidth, PHASE1_PARAMS.MAX_WIDTH);
+  const scale = targetW / origWidth;
+  return {
+    w: Math.round(targetW),
+    h: Math.max(1, Math.round(origHeight * scale)),
+  };
+}
+
+// ================================================================
+// 初期化
+// ================================================================
+async function init() {
+  try {
+    const { _pendingVideoConvert } = await browser.storage.local.get("_pendingVideoConvert");
+    if (!_pendingVideoConvert) {
+      log("受領データがありません。ウィンドウを閉じてください。", "error");
+      return;
+    }
+    const { videoUrl, pageUrl, videoWidth, videoHeight, duration } = _pendingVideoConvert;
+
+    // メタ情報表示
+    const meta = document.getElementById("meta");
+    meta.innerHTML = [
+      `<div><span class="key">URL:</span> <code>${escapeHtml(videoUrl)}</code></div>`,
+      `<div><span class="key">元サイズ:</span> ${videoWidth || "?"} × ${videoHeight || "?"} px / <span class="key">長さ:</span> ${duration ? duration.toFixed(1) + " 秒" : "?"}</div>`,
+      `<div><span class="key">変換設定（Phase 1 固定）:</span> ${PHASE1_PARAMS.DURATION_SEC} 秒 / ${PHASE1_PARAMS.FPS} fps / 最大 ${PHASE1_PARAMS.MAX_WIDTH}px</div>`,
+    ].join("");
+
+    // プレビュー動画
+    const video = document.getElementById("preview");
+    video.src = videoUrl;
+    video.load();
+
+    // isSupported チェック
+    if (typeof gifshot === "undefined") {
+      log("gifshot ライブラリの読込に失敗しました。", "error");
+      document.getElementById("convert-btn").disabled = true;
+      return;
+    }
+    if (!gifshot.isExistingVideoGIFSupported(["mp4", "webm"])) {
+      log("このブラウザは mp4/webm → GIF 変換に対応していません。", "error");
+      document.getElementById("convert-btn").disabled = true;
+      return;
+    }
+
+    // 変換ボタン
+    document.getElementById("convert-btn").addEventListener("click", () => {
+      runConversion(videoUrl, pageUrl, videoWidth, videoHeight);
+    });
+
+    // キャンセル
+    document.getElementById("cancel-btn").addEventListener("click", () => {
+      window.close();
+    });
+
+    log("準備完了。「GIF に変換」をクリックしてください。");
+  } catch (err) {
+    log(`初期化エラー: ${err.message}`, "error");
+  }
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// ================================================================
+// 変換実行
+// ================================================================
+function runConversion(videoUrl, pageUrl, origWidth, origHeight) {
+  const btn = document.getElementById("convert-btn");
+  btn.disabled = true;
+  btn.textContent = "変換中…";
+  log("動画を読込中…");
+  updateProgress(0);
+
+  const size = computeGifSize(origWidth, origHeight);
+  const numFrames = PHASE1_PARAMS.DURATION_SEC * PHASE1_PARAMS.FPS;
+
+  const startTime = Date.now();
+
+  gifshot.createGIF({
+    video: [videoUrl],
+    gifWidth: size.w,
+    gifHeight: size.h,
+    numFrames,
+    interval: 1 / PHASE1_PARAMS.FPS,
+    sampleInterval: PHASE1_PARAMS.SAMPLE_INTERVAL,
+    numWorkers: PHASE1_PARAMS.NUM_WORKERS,
+    progressCallback: (captureProgress) => {
+      updateProgress(captureProgress);
+      log(`変換中… ${Math.round(captureProgress * 100)}%`);
+    },
+  }, async (obj) => {
+    if (obj.error) {
+      log(`変換失敗: ${obj.errorCode || ""} ${obj.errorMsg || ""}`, "error");
+      btn.disabled = false;
+      btn.textContent = "再試行";
+      hideProgress();
+      return;
+    }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const approxSize = (obj.image.length * 0.75 / 1024 / 1024).toFixed(1);
+    log(`✅ 変換完了（${elapsed} 秒、約 ${approxSize} MB）。保存モーダルを起動しています…`, "success");
+    updateProgress(1);
+
+    try {
+      // 既存の保存フロー起動：_pendingModal に GIF dataURL をセットして OPEN_MODAL_WINDOW
+      await browser.storage.local.set({
+        _pendingModal: {
+          imageUrl: obj.image,
+          pageUrl: pageUrl || "",
+        },
+      });
+      await browser.runtime.sendMessage({
+        type: "OPEN_MODAL_WINDOW",
+        imageUrl: obj.image,
+        pageUrl: pageUrl || "",
+      });
+      // 受領データクリア（次回衝突防止）
+      await browser.storage.local.remove("_pendingVideoConvert");
+      // 自ウィンドウを閉じる（少し待って保存モーダル起動を先に）
+      setTimeout(() => window.close(), 500);
+    } catch (err) {
+      log(`保存モーダル起動失敗: ${err.message}`, "error");
+      btn.disabled = false;
+      btn.textContent = "再試行";
+    }
+  });
+}
+
+// ================================================================
+// エントリーポイント
+// ================================================================
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
+}

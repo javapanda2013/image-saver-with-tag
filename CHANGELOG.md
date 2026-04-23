@@ -5,6 +5,56 @@
 
 ---
 
+## [1.31.0] - 2026-04-24
+
+### Added — 動画 → GIF 変換 Phase 1 MVP（GROUP-15-impl-A-phase1）
+
+HTMLVideoElement を GIF に変換して保存できる機能の最小実装。実装駆動で Q15-v2-* を逐次解決する方針のため、Phase 1 は固定パラメータ・直 mp4 URL 対応のみ。Phase 2 で設定タブと可変オプション、Phase 3 で Native Messaging 経由 ffmpeg（モード B）を追加予定。
+
+#### 追加ファイル
+- `src/vendor/gifshot.min.js`（24KB、MIT、https://github.com/michael-benin-CN/gifshot より取得）
+- `src/video-convert/video_convert.html`（変換ウィンドウ UI）
+- `src/video-convert/video_convert.js`（gifshot 呼出・progress 表示・既存保存フロー連携）
+
+#### 変更ファイル
+- `manifest.json` バージョン 1.30.11 → 1.31.0、`web_accessible_resources` に新規 3 ファイル追加
+- `src/content/content.js` video 要素 hover 検知、🎬 動画→GIF ボタン追加（img / video でボタン切替）
+- `src/background/background.js` `OPEN_VIDEO_CONVERT` ハンドラ、`videoConvertWindowId` 管理、`openVideoConvertWindow` 実装
+
+#### フロー
+1. Web ページの `<video>` に hover → 🎬 動画→GIF ボタン表示（既存 💾/⚡ と置換、video 要素のみ）
+2. クリック → content.js が `video.currentSrc` 等を抽出して `OPEN_VIDEO_CONVERT` 送信
+3. background.js が変換ウィンドウ（`video_convert.html`）を起動、`_pendingVideoConvert` に受領情報格納
+4. 変換ウィンドウが video プレビューと「GIF に変換」ボタンを表示
+5. ユーザーがクリック → gifshot.createGIF 実行、progressCallback でプログレスバー更新
+6. 変換完了 → obj.image dataURL を取得、`_pendingModal` に格納し `OPEN_MODAL_WINDOW` 送信
+7. 既存の保存モーダルが dataURL を imageUrl として受信し、通常の保存フロー（タグ付与・保存先選択・履歴追加）へ
+8. 変換ウィンドウは自動 close
+
+#### Phase 1 固定パラメータ
+- 長さ: 20 秒（numFrames=200, interval=0.1）
+- FPS: 10 fps
+- 幅: 最大 480px（元動画のアスペクト比維持、元幅が 480 未満は元幅）
+- sampleInterval: 10（gifshot 既定）
+- numWorkers: 2（gifshot 既定）
+
+#### Phase 1 既知の制約（Phase 2/3 で対応予定）
+- **直 mp4/webm URL のみ対応**。`blob:` / MSE URL（X / YouTube 等の HLS 配信）は gifshot が CORS/origin 制約で読めないため失敗する。Phase 2 で content.js 側のフレーム抽出方式を追加予定
+- 変換オプション可変 UI なし（Phase 2 で設定タブに追加）
+- 進捗永続化なし（ウィンドウ閉鎖で中断）
+- Canvas 要素（pixiv / X 独自 Canvas）未対応（Phase 2 以降）
+- モード B（ffmpeg）未対応（Phase 3）
+
+#### 動作確認項目
+- **Native 変更なし**（native v1.11.1 維持）
+- `<video src="...mp4">` が直 URL のサイト（例：一般的な mp4 埋込）で動作確認
+  - hover で 🎬 ボタン表示 / クリックで変換ウィンドウ起動 / 変換完了で保存モーダル起動
+- X（HLS）等の `blob:` URL で変換失敗時、エラーメッセージが表示される（機能デグレではなく制約）
+- 画像 hover 時に 🎬 ボタンが出ない / 動画 hover 時に 💾⚡ ボタンが出ない（切替正常）
+- 既存画像保存機能に影響なし
+
+---
+
 ## [1.30.11] - 2026-04-23
 
 ### Changed — Firefox Profiler 実測に基づく allocation 削減（GROUP-26-mem-2-B）

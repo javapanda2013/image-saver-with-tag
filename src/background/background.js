@@ -162,7 +162,47 @@ async function openModalWindow(imageUrl, pageUrl) {
 // ウィンドウが閉じられたら ID をリセット
 browser.windows.onRemoved.addListener((windowId) => {
   if (windowId === modalWindowId) modalWindowId = null;
+  if (windowId === videoConvertWindowId) videoConvertWindowId = null;
 });
+
+// ----------------------------------------------------------------
+// 動画 → GIF 変換ウィンドウ管理（GROUP-15-impl-A-phase1、v1.31.0）
+// ----------------------------------------------------------------
+let videoConvertWindowId = null;
+
+async function openVideoConvertWindow(payload) {
+  const { videoUrl, pageUrl, videoWidth, videoHeight, duration } = payload;
+  // 受領情報を storage に格納（video_convert.js が読む）
+  await browser.storage.local.set({
+    _pendingVideoConvert: { videoUrl, pageUrl, videoWidth, videoHeight, duration },
+  });
+
+  // 既存ウィンドウ再利用
+  if (videoConvertWindowId !== null) {
+    try {
+      const win = await browser.windows.get(videoConvertWindowId);
+      if (win) {
+        if (win.state === "minimized") {
+          await browser.windows.update(videoConvertWindowId, { state: "normal" });
+        }
+        await browser.windows.update(videoConvertWindowId, { focused: true });
+        const tabs = await browser.tabs.query({ windowId: videoConvertWindowId });
+        if (tabs[0]) await browser.tabs.reload(tabs[0].id);
+        return;
+      }
+    } catch (_) {
+      videoConvertWindowId = null;
+    }
+  }
+
+  const win = await browser.windows.create({
+    url: browser.runtime.getURL("src/video-convert/video_convert.html"),
+    type: "normal",
+    width: 720,
+    height: 560,
+  });
+  videoConvertWindowId = win.id;
+}
 
 // v1.26.1 (BUG-modal-focus-jump): モーダルタブが別ウィンドウへ移動された場合、
 // キャッシュしている modalWindowId を新 windowId へ自動更新する。
@@ -207,6 +247,16 @@ async function handleAsyncMessage(message, sender) {
   switch (message.type) {
     case "OPEN_MODAL_WINDOW":
       openModalWindow(message.imageUrl, message.pageUrl);
+      return;
+    case "OPEN_VIDEO_CONVERT":
+      // GROUP-15-impl-A-phase1：動画 → GIF 変換ウィンドウを開く
+      openVideoConvertWindow({
+        videoUrl: message.videoUrl,
+        pageUrl: message.pageUrl,
+        videoWidth: message.videoWidth,
+        videoHeight: message.videoHeight,
+        duration: message.duration,
+      });
       return;
     case "LIST_DIR":
       return listDir(message.path);

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "BorgesTag",
-  "version": "1.30.11",
+  "version": "1.31.0",
   "description": "右クリックから画像をタグ付きで保存する拡張機能",
   "permissions": [
     "contextMenus",
@@ -15,7 +15,10 @@
     "src/modal/modal.html",
     "src/modal/modal.js",
     "src/viewer/viewer.html",
-    "src/viewer/viewer.js"
+    "src/viewer/viewer.js",
+    "src/video-convert/video_convert.html",
+    "src/video-convert/video_convert.js",
+    "src/vendor/gifshot.min.js"
   ],
   "background": {
     "scripts": [

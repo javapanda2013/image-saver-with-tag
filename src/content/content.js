@@ -21,6 +21,8 @@ const DELAY_SHOW = 200;
 const DELAY_HIDE = 400;
 const MIN_SIZE   = 48;
 
+// GROUP-15-impl-A-phase1 (v1.31.0)：currentImg は img / video 両方を格納しうる。
+// 種別判定は tagName === "VIDEO" か currentImg._isVideo プロキシで行う。
 let currentImg   = null;
 let hoverWrap    = null; // ボタン群を包むラッパー
 let showTimer    = null;
@@ -122,11 +124,55 @@ function getWrap() {
     hideNow();
   });
 
+  // GROUP-15-impl-A-phase1：動画 → GIF 変換ボタン（video 要素ホバー時のみ表示）
+  const videoBtn = document.createElement("button");
+  videoBtn.id = "__image-saver-video-btn__";
+  videoBtn.textContent = "🎬 動画→GIF";
+  videoBtn.title = "動画を GIF に変換して保存（Phase 1 MVP、直 mp4 URL のみ対応）";
+  videoBtn.style.cssText = btnStyle("rgba(120,60,160,.9)");
+  videoBtn.style.display = "none"; // 初期非表示、video ホバー時のみ show
+  videoBtn.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+  videoBtn.addEventListener("mouseleave", () => { startWatch(); scheduleHide(); });
+  videoBtn.addEventListener("click", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!currentImg || currentImg.tagName !== "VIDEO") return;
+    const videoUrl = currentImg.currentSrc || currentImg.src;
+    if (!videoUrl) return;
+    browser.runtime.sendMessage({
+      type:        "OPEN_VIDEO_CONVERT",
+      videoUrl:    videoUrl,
+      pageUrl:     location.href,
+      videoWidth:  currentImg.videoWidth || 0,
+      videoHeight: currentImg.videoHeight || 0,
+      duration:    Number.isFinite(currentImg.duration) ? currentImg.duration : 0,
+    });
+    hideNow();
+  });
+
   wrap.appendChild(instantBtn);
   wrap.appendChild(saveBtn);
+  wrap.appendChild(videoBtn);
   document.body.appendChild(wrap);
   hoverWrap = wrap;
   return wrap;
+}
+
+// GROUP-15-impl-A-phase1：video / img に応じてボタン表示を切替
+function updateButtonVisibility() {
+  if (!hoverWrap) return;
+  const isVideo = currentImg && currentImg.tagName === "VIDEO";
+  const instantBtn = hoverWrap.querySelector("#__image-saver-instant-btn__");
+  const saveBtn = hoverWrap.querySelector("#__image-saver-hover-btn__");
+  const videoBtn = hoverWrap.querySelector("#__image-saver-video-btn__");
+  if (isVideo) {
+    if (instantBtn) instantBtn.style.display = "none";
+    if (saveBtn) saveBtn.style.display = "none";
+    if (videoBtn) videoBtn.style.display = "";
+  } else {
+    if (instantBtn) instantBtn.style.display = instantSaveEnabled ? "" : "none";
+    if (saveBtn) saveBtn.style.display = "";
+    if (videoBtn) videoBtn.style.display = "none";
+  }
 }
 
 function btnStyle(bg) {
@@ -146,6 +192,7 @@ function showAt(img) {
   const rect = img.getBoundingClientRect();
   const wrap = getWrap();
   currentImg = img;
+  updateButtonVisibility(); // GROUP-15-impl-A-phase1：video / img でボタン切替
   const ww = 180, bh = 28;
   let left = rect.right - ww - 4;
   let top  = rect.top + 4;
@@ -199,6 +246,15 @@ function isValidImg(el) {
   return rect.width >= MIN_SIZE && rect.height >= MIN_SIZE;
 }
 
+// GROUP-15-impl-A-phase1：video 要素が GIF 変換候補として有効か判定
+function isValidVideo(el) {
+  if (!el || el.tagName !== "VIDEO") return false;
+  const src = el.currentSrc || el.src;
+  if (!src) return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width >= MIN_SIZE && rect.height >= MIN_SIZE;
+}
+
 let _initialMoveHandled = false;
 document.addEventListener("mousemove", (e) => {
   lastMouseX = e.clientX; lastMouseY = e.clientY;
@@ -214,6 +270,15 @@ document.addEventListener("mousemove", (e) => {
 }, { passive: true });
 
 document.addEventListener("mouseover", (e) => {
+  // GROUP-15-impl-A-phase1：video 要素を優先検知（img より先に）
+  const video = e.target.closest("video");
+  if (video && isValidVideo(video) && !e.target.closest("#__image-saver-wrap__")) {
+    if (video === currentImg) { clearTimeout(hideTimer); return; }
+    clearTimeout(hideTimer); clearTimeout(showTimer);
+    showTimer = setTimeout(() => showAt(video), DELAY_SHOW);
+    return;
+  }
+
   // ① 通常ケース：<img> 要素に直接マウスが乗っている
   let img = e.target.closest("img");
 
