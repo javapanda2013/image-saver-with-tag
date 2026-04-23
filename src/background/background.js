@@ -477,41 +477,28 @@ function sendNative(payload) {
     // 詳細：設計書類 07 §8
     const cmdName = JSON.parse(JSON.stringify(payload.cmd));
 
-    let payloadJson;
-    try {
-      // GROUP-26-I (v1.29.1): WRITE_FILE の大容量 content は 2 重 JSON 化を避ける手動組立経路
-      if (
-        cmdName === "WRITE_FILE" &&
-        typeof payload.content === "string" &&
-        payload.content.length > 1_000_000
-      ) {
-        const { cmd, path, content, ...rest } = payload;
-        const headerObj = { cmd, path, ...rest };
-        const headerJson = JSON.stringify(headerObj);         // ヘッダ部（常に小さい）
-        const headerWithoutClose = headerJson.slice(0, -1);   // 末尾 `}` 除去
-        const contentJson = JSON.stringify(content);          // content 単独 JSON 化（1 回のみ）
-        payloadJson = `${headerWithoutClose},"content":${contentJson}}`;
-      } else {
-        payloadJson = JSON.stringify(payload);                // 既存経路
-      }
-    } catch (e) {
-      addLog("ERROR", `sendNative: JSON化失敗 ${cmdName}`, e.message);
-      reject(new Error(`payload を JSON 化できません: ${e.message}`));
-      return;
-    }
-    // WRITE_FILE はエクスポート用途で大容量 JSON（数百 MB 級）を渡すことがあり、
-    // SAVE_IMAGE_BASE64 はブラウザ Cookie で取得した画像の Base64 データ（数 MB〜数十 MB）を渡すため、
-    // Firefox の拡張→ネイティブ方向は実質的に大容量を許容するので上限チェックから除外する。
-    // READ_LOCAL_IMAGE_BASE64 は外部取り込み（1枚ずつ形式）のプレビュー取得で、
-    //   ・拡張 → ネイティブ方向は path のみで小さいが、将来の引数増加を考慮して除外に含める
-    //   ・ネイティブ → 拡張方向は大容量（プレビュー画像 Base64）
-    // それ以外のコマンドは想定外の巨大ペイロードを早期に弾いて Native 切断事故を防ぐ。
+    // v1.30.11 GROUP-26-mem-2-B: payloadJson の構築を廃止（Firefox Profiler 実測で判明）。
+    // 過去 v1.29.1 GROUP-26-I の手動組立は port.postMessage に使われておらず、
+    // size check / log preview のための中間データでしかなかった。chunk ごとに 50MB 級の
+    // 文字列を生成していたため、cumulative で ~1.5GB の割当を削減。
+    // Firefox の Port.postMessage(payload) は内部で独自に JSON.stringify するため、
+    // 我々が事前に JSON 化する必要はない。
+    // 詳細：07 §8 / 09_メモリ調査ツール候補.md の Firefox Profiler 計測結果
+
+    // Size check：大容量 string フィールド（content / dataUrl）の length で概算。
+    // WRITE_FILE / SAVE_IMAGE_BASE64 / READ_LOCAL_IMAGE_BASE64 は exempt（想定内の大容量）。
+    // それ以外のコマンドで想定外の巨大ペイロードが来た場合は早期リジェクト。
     const exemptCmds = ["WRITE_FILE", "SAVE_IMAGE_BASE64", "READ_LOCAL_IMAGE_BASE64"];
-    if (!exemptCmds.includes(cmdName) && payloadJson.length > NATIVE_PAYLOAD_MAX_BYTES) {
-      const kb = (payloadJson.length / 1024).toFixed(0);
-      addLog("ERROR", `sendNative: payload 過大 ${cmdName}`, `${kb} KB`);
-      reject(new Error(`payload が大きすぎます: ${kb} KB（上限 ${NATIVE_PAYLOAD_MAX_BYTES / 1024 / 1024} MB）`));
-      return;
+    if (!exemptCmds.includes(cmdName)) {
+      let estimatedSize = 0;
+      if (typeof payload.content === "string") estimatedSize += payload.content.length;
+      if (typeof payload.dataUrl === "string") estimatedSize += payload.dataUrl.length;
+      if (estimatedSize > NATIVE_PAYLOAD_MAX_BYTES) {
+        const kb = (estimatedSize / 1024).toFixed(0);
+        addLog("ERROR", `sendNative: payload 過大 ${cmdName}`, `${kb} KB（推定）`);
+        reject(new Error(`payload が大きすぎます（推定）: ${kb} KB（上限 ${NATIVE_PAYLOAD_MAX_BYTES / 1024 / 1024} MB）`));
+        return;
+      }
     }
 
     let port;
@@ -523,7 +510,20 @@ function sendNative(payload) {
       return;
     }
 
-    addLog("INFO", `Native送信: ${cmdName}`, payloadJson.slice(0, 200));
+    // v1.30.11: payloadJson を廃止したので preview は content / path / 小 payload から直接取得。
+    // addLog 内で JSON round-trip による linear copy（v1.30.2）が走るため dependent string 対策は不要。
+    let __logPreview = "";
+    try {
+      if (typeof payload.content === "string") {
+        __logPreview = payload.content.slice(0, 200);
+      } else if (typeof payload.path === "string") {
+        __logPreview = payload.path.slice(0, 200);
+      } else {
+        // 小 payload 想定：JSON.stringify しても軽い（大フィールドは上記でハンドル済）
+        __logPreview = JSON.stringify(payload).slice(0, 200);
+      }
+    } catch (_) { /* preview 生成失敗は無視 */ }
+    addLog("INFO", `Native送信: ${cmdName}`, __logPreview);
 
     // v1.20.2: コマンド別タイムアウト（v1.20.1 の対象をさらに拡大）。
     // 長時間処理の可能性があるコマンドは 300 秒に延長。瞬時操作は従来どおり 10 秒でハング検知。
@@ -573,16 +573,14 @@ function sendNative(payload) {
 
     port.postMessage(payload);
 
-    // v1.30.7 GROUP-26-slice-6: payload / payloadJson の参照を明示的に切る
-    // 背景：v1.30.6 WeakRef 診断で payload_alive=true × 7、json_probe_alive=false × 7 と判明。
-    // sendNative scope の whole-scope closure capture は起きていない（json_probe dead）が、
-    // payload オブジェクト自体は port.postMessage 後も 7 chunk 分 retain される（payload alive）。
-    // JS 側で payload への参照を持つ経路を断ち切ることで、Firefox 内部での延命・
+    // v1.30.7 GROUP-26-slice-6: payload の参照を明示的に切る。
+    // 背景：v1.30.6 WeakRef 診断で payload_alive=true × 7 と判明。
+    // sendNative scope 由来の JS 参照を切断することで、Firefox 内部での延命・
     // writeFile activation record の一時参照・Promise chain 経路のいずれであっても、
-    // 少なくとも sendNative scope 由来の参照は確実に切断する。
+    // 少なくとも sendNative scope からの保持は確実に切断する。
     // 詳細：07 §8 / 09_メモリ調査ツール候補.md / memory/feedback_memory_debug.md
+    // v1.30.11：payloadJson 廃止に伴い payload = null のみ残す
     payload = null;
-    payloadJson = null;
   });
 }
 
@@ -1476,6 +1474,37 @@ async function getThumbFromIDB(thumbId) {
 }
 
 /** IDB の全サムネイルを { id, dataUrl } の配列で返す（エクスポート用） */
+/**
+ * Blob を DataURL 文字列に変換する共通ヘルパー（v1.30.11 GROUP-26-mem-2-B）。
+ *
+ * 従来の `btoa(String.fromCharCode で組んだ binary 文字列)` 経路は、
+ * 50MB 級 Blob で中間 binary 文字列（50MB）＋ btoa 出力（67MB）＋ rope 結合の
+ * 累計 ~300MB 割当を発生させていた（Firefox Profiler 計測、2026-04-23）。
+ *
+ * 代替として `FileReader.readAsDataURL` を使用すると、Firefox 内部で直接 dataUrl を
+ * 生成できるため中間 JS 文字列を発生させない。出力形式（`data:<mime>;base64,<base64>`）
+ * は従来と完全互換。
+ *
+ * blob.type が空の古いエントリのみ、従来経路（image/jpeg 固定フォールバック）を維持して
+ * 出力互換性を保つ。
+ */
+async function blobToDataUrl(blob) {
+  if (blob && blob.type) {
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error("FileReader error"));
+      reader.readAsDataURL(blob);
+    });
+  }
+  // Edge case：blob.type 不明 → 従来どおり image/jpeg 仮定でフォールバック
+  const ab    = await blob.arrayBuffer();
+  const bytes = new Uint8Array(ab);
+  let binary  = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return "data:image/jpeg;base64," + btoa(binary);
+}
+
 async function exportIdbThumbs() {
   try {
     const db = await openThumbDB();
@@ -1487,17 +1516,13 @@ async function exportIdbThumbs() {
       req.onerror   = (e) => reject(e.target.error);
     });
 
-    // Blob → Base64 DataURL に変換
+    // Blob → Base64 DataURL に変換（v1.30.11：FileReader 経路で中間文字列削減）
     const thumbs = [];
     for (const rec of records) {
       if (!rec.id || !rec.blob) continue;
-      const ab    = await rec.blob.arrayBuffer();
-      const bytes = new Uint8Array(ab);
-      let binary  = "";
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
       thumbs.push({
-        id:       rec.id,
-        dataUrl:  `data:${rec.blob.type || "image/jpeg"};base64,` + btoa(binary),
+        id:      rec.id,
+        dataUrl: await blobToDataUrl(rec.blob),
       });
     }
     return { ok: true, thumbs };
@@ -1550,16 +1575,13 @@ async function getIdbThumbsByIds(ids) {
     });
 
     // Step 2：トランザクションは閉じた状態で blob → base64 変換（await 安全）
+    // v1.30.11：共通ヘルパー blobToDataUrl で FileReader 経由に統一（中間文字列削減）
     const thumbs = [];
     for (const rec of records) {
       if (!rec || !rec.blob) continue;
-      const ab    = await rec.blob.arrayBuffer();
-      const bytes = new Uint8Array(ab);
-      let binary  = "";
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
       thumbs.push({
-        id:       rec.id,
-        dataUrl:  `data:${rec.blob.type || "image/jpeg"};base64,` + btoa(binary),
+        id:      rec.id,
+        dataUrl: await blobToDataUrl(rec.blob),
       });
     }
     return { ok: true, thumbs };

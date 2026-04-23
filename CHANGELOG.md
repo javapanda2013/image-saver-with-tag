@@ -5,6 +5,60 @@
 
 ---
 
+## [1.30.11] - 2026-04-23
+
+### Changed — Firefox Profiler 実測に基づく allocation 削減（GROUP-26-mem-2-B）
+
+#### 背景
+Firefox Developer Edition の Profiler で Native/JS allocations を計測した結果、エクスポート中の累積 allocation 上位が以下と判明（プロファイル全体 ~6.5GB 中）：
+
+| 発生源 | 累積 allocation |
+|---|---|
+| JSON.stringify（全体） | 3556 MB |
+| - Firefox `Port.holdMessage` 内部 JSON 化 | 1456 MB（不可避） |
+| - **我々の sendNative 手動組立** | **1488 MB（削減可）** |
+| - settings.js exportData の JSON.stringify | 578 MB |
+| TextEncoder.encode（Firefox 内部） | 625 MB（不可避） |
+| **Window.btoa（`getIdbThumbsByIds` の base64 変換）** | **295 MB（削減可）** |
+| StructuredClone | 352 MB |
+
+実行中ピーク 2.96GB、post-export は v1.30.7 の修正で ~100MB 安定を維持。
+
+#### 対策（B-simple）：sendNative の payloadJson 構築を廃止
+v1.29.1 GROUP-26-I で導入した手動 JSON 組立は `port.postMessage` に使われず、size check と log preview のための中間データに過ぎないと判明。`port.postMessage(payload)` は Firefox が内部で独自に JSON 化するため、事前 stringify は不要。
+
+変更内容：
+- sendNative 冒頭の `payloadJson` 変数と組立ロジックを削除
+- size check は `payload.content.length` / `payload.dataUrl.length` による概算に置換（exempt コマンド以外のみ。WRITE_FILE 等は影響なし）
+- log preview は `payload.content.slice(0, 200)` / `payload.path` / JSON.stringify fallback から構築（小 payload のみ JSON 化）
+- `payload = null` は維持、`payloadJson = null` は変数自体削除のため不要
+
+#### 対策（B-btoa）：FileReader.readAsDataURL で base64 変換を効率化
+`getIdbThumbsByIds` / `exportIdbThumbs` の `Blob → Uint8Array → binary 文字列 → btoa` 経路で発生していた中間文字列（50MB 級 × 2）を、`FileReader.readAsDataURL` に置換。
+
+- 共通ヘルパー `blobToDataUrl(blob)` を新設
+- `blob.type` が設定されていれば FileReader 経由（通常経路）
+- 空の場合のみ従来 btoa 経路（`image/jpeg` フォールバック）で互換維持
+
+#### 想定効果
+- B-simple 単独：累積 allocation -1488 MB、実行中ピーク -500〜800 MB 期待
+- B-btoa 単独：累積 allocation -295 MB、実行中ピーク -100〜200 MB 期待
+- 合計：累積 allocation -1783 MB、実行中ピーク 2.96GB → **2〜2.5GB** 想定
+
+#### 互換性
+- **マイグレーション不要**：Native プロトコル・IDB スキーマ・zip 出力形式・インポート互換すべて完全維持
+- Native 変更なし（native v1.11.1 維持）
+- 出力 dataUrl は通常データ（blob.type 設定済）で従来と完全同一バイト列
+
+#### 動作確認項目
+- エクスポート正常完走（機能デグレなし）
+- zip 中身が v1.30.10 と同一（history-\*.json / thumbs-\*.json / manifest.json / settings.json）
+- インポート互換（新 zip・旧 zip 両方読み込み可）
+- 実行中ピーク測定：Firefox Profiler または task manager で 2.5GB 未満を目標
+- 実行後残留測定：v1.30.7 同等の ~100MB で劣化なし
+
+---
+
 ## [1.30.10] - 2026-04-23
 
 ### Changed — エクスポート chunk 一時フォルダを常に %TEMP% 配下に配置（GROUP-26-cleanup-2）
