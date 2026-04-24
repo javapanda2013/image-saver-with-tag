@@ -3471,40 +3471,28 @@ async function _toggleHistAudio(entry, btn) {
   try {
     let cached = _histAudioCache.get(entry.id);
     if (!cached) {
+      // v1.31.9：FETCH_FILE_AS_DATAURL は内部で Python の READ_FILE_BASE64 を呼び出し
+      // 非 GIF ファイルは PIL で画像として開こうとして UnidentifiedImageError になる。
+      // 音声 (.webm / .mp3 等) は READ_FILE_CHUNKS_B64 を直接使って PIL を迂回する。
       const res = await browser.runtime.sendMessage({
-        type: "FETCH_FILE_AS_DATAURL",
+        type: "READ_FILE_CHUNKS_B64",
         path: audioPath,
       });
-      if (!res || !res.ok) {
+      if (!res || !res.ok || !Array.isArray(res.chunksB64)) {
         console.warn(`[hist-audio] 音声読込失敗`, res?.error || "不明", { path: audioPath });
         btn.disabled = false;
         btn.textContent = originalText;
         return;
       }
-      let blob;
-      if (res.dataUrl) {
-        // dataURL → Blob
-        const [, b64] = res.dataUrl.split(",");
+      // chunk 配列 → Blob
+      const arrays = [];
+      for (const b64 of res.chunksB64) {
         const bin = atob(b64);
-        const buf = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-        blob = new Blob([buf], { type: entry.audioMimeType || "audio/webm" });
-      } else if (Array.isArray(res.chunksB64)) {
-        // chunk 配列 → Blob
-        const arrays = [];
-        for (const b64 of res.chunksB64) {
-          const bin = atob(b64);
-          const arr = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-          arrays.push(arr);
-        }
-        blob = new Blob(arrays, { type: res.mime || entry.audioMimeType || "audio/webm" });
-      } else {
-        console.warn(`[hist-audio] 音声レスポンス形式が不明です`, res);
-        btn.disabled = false;
-        btn.textContent = originalText;
-        return;
+        const arr = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        arrays.push(arr);
       }
+      const blob = new Blob(arrays, { type: entry.audioMimeType || "audio/webm" });
       const blobUrl = URL.createObjectURL(blob);
       const audio = new Audio(blobUrl);
       audio.loop = true; // GIF は自動ループなのでそれに合わせる

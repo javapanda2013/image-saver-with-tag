@@ -600,6 +600,35 @@ async function handleAsyncMessage(message, sender) {
 // Native Messaging のペイロード上限（Firefox 仕様 4MB）に対する安全マージン
 const NATIVE_PAYLOAD_MAX_BYTES = 3 * 1024 * 1024;
 
+// v1.31.9：Native 応答の log preview 用浅いダンプ。
+// 従来の `JSON.stringify(response).slice(0, 200)` は response が数 MB のとき
+// 全体 JSON 化で浪費（Profiler 実測 649MB 累積）、フィールド名 + 短い値 +
+// 大容量フィールドの長さ表記のみで代替する。
+function _shallowResponsePreview(r) {
+  if (r == null) return String(r);
+  if (typeof r !== "object") return String(r).slice(0, 100);
+  try {
+    const parts = [];
+    for (const k of Object.keys(r)) {
+      const v = r[k];
+      if (v == null) {
+        parts.push(`${k}:${v}`);
+      } else if (typeof v === "string") {
+        parts.push(v.length > 40 ? `${k}:"${v.slice(0, 40)}…"(${v.length})` : `${k}:"${v}"`);
+      } else if (typeof v === "number" || typeof v === "boolean") {
+        parts.push(`${k}:${v}`);
+      } else if (Array.isArray(v)) {
+        parts.push(`${k}:[${v.length}]`);
+      } else {
+        parts.push(`${k}:<${typeof v}>`);
+      }
+    }
+    return parts.join(",").slice(0, 200);
+  } catch (_) {
+    return "<preview failed>";
+  }
+}
+
 function sendNative(payload) {
   return new Promise((resolve, reject) => {
     // ① 入力検証: 型・必須フィールド・JSONシリアライズ可否・サイズ上限
@@ -703,9 +732,13 @@ function sendNative(payload) {
     port.onMessage.addListener((response) => {
       clearTimeout(timer);
       port.disconnect();
+      // v1.31.9：`JSON.stringify(response).slice(0, 200)` は response が数 MB
+      //（サムネ data 等）の時に全 JSON 化して 200 文字だけ取る浪費で、
+      // Firefox Profiler 実測で累積 649MB の Native allocation を消費していた。
+      // shallow preview で大きいフィールドは長さや型だけ記録する。
       addLog(response.ok === false ? "WARN" : "INFO",
         `Native応答: ${cmdName}`,
-        JSON.stringify(response).slice(0, 200));
+        _shallowResponsePreview(response));
       resolve(response);
     });
 
@@ -2246,13 +2279,35 @@ async function handleSaveMulti(payload) {
 // 保存履歴（最大3件・複数保存先対応・IndexedDB サムネイル）
 // ----------------------------------------------------------------
 
+// v1.31.9：storage 全体を 1 度の JSON.stringify で文字列化すると、saveHistory が
+// 大きいユーザーで 145MB の JSON + 67MB の TextEncoder 割当（Profiler 実測）に
+// なる。表示用の概算値で十分なので key 別に再帰的に byte 数を推定（UTF-16 換算）。
+function _roughJsonSize(v) {
+  if (v == null) return 4; // "null"
+  const t = typeof v;
+  if (t === "string")  return v.length * 2 + 2;
+  if (t === "number" || t === "boolean") return 16;
+  if (Array.isArray(v)) {
+    let s = 2; // []
+    for (const e of v) s += _roughJsonSize(e) + 1;
+    return s;
+  }
+  if (t === "object") {
+    let s = 2; // {}
+    for (const k of Object.keys(v)) s += k.length * 2 + 3 + _roughJsonSize(v[k]);
+    return s;
+  }
+  return 0;
+}
+
 /** storage.local と IndexedDB の使用容量を返す */
 async function getStorageSize() {
   // storage.local
   let storageSizeStr = "不明";
   try {
     const all   = await browser.storage.local.get(null);
-    const bytes = new TextEncoder().encode(JSON.stringify(all)).length;
+    // v1.31.9：巨大 storage を 1 回で JSON 化せず、key 別再帰推定で近似
+    const bytes = _roughJsonSize(all);
     storageSizeStr = bytes < 1024 * 1024
       ? `${(bytes / 1024).toFixed(1)} KB`
       : `${(bytes / 1024 / 1024).toFixed(2)} MB`;

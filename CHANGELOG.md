@@ -5,6 +5,87 @@
 
 ---
 
+## [1.31.9] - 2026-04-24
+
+### Fixed — 音声再生が UnidentifiedImageError で失敗する問題（GROUP-28 mvdl hotfix 6th）
+
+#### 症状
+v1.31.8 で保存履歴の🔇アイコンクリックが ReferenceError なしで動くようになったが、音声ファイル読込が失敗：
+
+```
+[hist-audio] 音声読込失敗 UnidentifiedImageError: cannot identify image file <_io.BytesIO object at 0x...>
+  { path: "E:\\d_640116s1.webm" }
+```
+
+#### 原因
+settings.js の `_toggleHistAudio` は `FETCH_FILE_AS_DATAURL` を呼び出していたが、内部的には Python の `handle_read_file_base64` に到達。この関数は**画像専用**で、非 GIF ファイルは PIL で `Image.open()` して JPEG 変換する仕様。.webm 音声ファイルは画像として認識できず `UnidentifiedImageError` で失敗。
+
+#### 対策
+settings.js が直接 `READ_FILE_CHUNKS_B64` を呼び出すよう変更。READ_FILE_CHUNKS_B64 は PIL を介さず raw bytes を chunk base64 で返すため、任意のファイル（音声・動画・バイナリ）を扱える。
+
+```js
+// 従来（PIL 経由で NG）
+const res = await browser.runtime.sendMessage({
+  type: "FETCH_FILE_AS_DATAURL", path: audioPath,
+});
+
+// 改善（PIL 迂回）
+const res = await browser.runtime.sendMessage({
+  type: "READ_FILE_CHUNKS_B64", path: audioPath,
+});
+// res.chunksB64 → Blob 組立（既存の chunk→Blob 処理流用）
+```
+
+Native 変更なし（既存の READ_FILE_CHUNKS_B64 / READ_FILE_CHUNK を流用）。
+
+### Performance — 設定画面のレスポンス改善（GROUP-30 settings-perf）
+
+#### 背景
+v1.31.8 で AMO 承認待ち中、設定画面利用時の「やや重い」挙動をユーザーが報告。Firefox Profiler 実測（pid=32236 WebExtensions プロセス、peak 399MB）で 2 つの Native allocation ホットスポットを特定：
+
+| 関数 | 累積 | 発生源 |
+|---|---|---|
+| **JSON.stringify** | **649 MB** | `sendNative` 内の応答 log preview：`JSON.stringify(response).slice(0, 200)` |
+| **JSON.stringify + TextEncoder.encode** | **212 MB** | `getStorageSize()` の `JSON.stringify(all)` + `TextEncoder.encode` |
+
+#### 対策 1：sendNative 応答 log preview の浅いダンプ化
+response が数 MB（サムネ data、IDB thumbs chunk 等）のときに全体 JSON 化して 200 文字だけ取る浪費だった。新ヘルパー `_shallowResponsePreview(r)` を追加し、フィールド名 + 短い値 + 大容量フィールドの長さ表記のみで代替：
+
+```js
+// 従来（浪費）
+JSON.stringify(response).slice(0, 200)
+
+// 改善
+_shallowResponsePreview(response)
+// 例："ok:true,thumbData:"R0lGODlh…"(856432),thumbMime:"image/gif",thumbWidth:600"
+```
+
+**想定効果**：Native 応答 log に起因する累積 649MB → ほぼゼロ
+
+#### 対策 2：getStorageSize を key 別再帰 rough 推定
+従来は storage 全体を 1 回の JSON.stringify で巨大文字列化していた。新ヘルパー `_roughJsonSize(v)` で個別 key に再帰的に byte 数を UTF-16 換算で累計：
+
+```js
+// 従来（浪費）
+const bytes = new TextEncoder().encode(JSON.stringify(all)).length;
+
+// 改善
+const bytes = _roughJsonSize(all);
+```
+
+表示用の概算値なので精度は実用範囲。
+
+**想定効果**：storage size 表示に起因する累積 212MB → ~20MB 以下
+
+#### 動作確認項目
+- **Native 変更なし**（native v1.11.1 維持）
+- 設定画面の保存履歴タブ表示、タグ・権利者タブ表示など重かった操作が軽くなる
+- 動作ログ（動作ログタブ）で Native 応答の preview が浅い形式で表示される（動作上の問題なし）
+- storage 使用量表示が適切な概算値で表示される（±5% 程度の誤差、UX 影響なし）
+- GROUP-28 の動画変換・音声保存フローへの影響なし
+
+---
+
 ## [1.31.8] - 2026-04-24
 
 ### Fixed — 保存履歴の音声アイコンクリックで `ReferenceError: log is not defined`（GROUP-28 mvdl hotfix 5th）
