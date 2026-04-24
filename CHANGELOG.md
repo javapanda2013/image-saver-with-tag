@@ -5,6 +5,40 @@
 
 ---
 
+## [1.32.0] - 2026-04-24
+
+### Added — 音声再生の拡張（GROUP-28 mvdl Phase 2 partial）
+
+#### ユーザー要望（2026-04-24）
+1. 「プレビュー」や「保存した画像を開く」の画面でも音声の ON/OFF を可能にする
+2. 複数の保存履歴の音声を同時に再生する
+
+#### 実装 1：複数エントリ同時再生
+- `_histAudioPlayingId: string | null` → `_histAudioPlayingIds: Set<string>` に変更
+- 別エントリの🔇アイコンをクリックしても**前の再生は止まらない**（従来の auto-stop 撤廃）
+- 各アイコン button に `data-audio-entry-id="<entry.id>"` を付与、`_updateAudioButtonsForEntry` で DOM 内の同エントリ全ボタンを一括更新（hist-card / Lightbox 両方同期）
+
+#### 実装 2：Lightbox（サムネ拡大表示）の音声ボタン
+- `showGroupLightbox` の DOM に `.lb-audio` ボタンを追加（`.lb-info` 内）
+- ナビゲーション時（left/right/up/down 等で別エントリ移動）に `updateView` が現在エントリの audio 有無でボタン表示/非表示を切替
+- クリックで `_toggleHistAudio` を呼出、既存のキャッシュ機構を流用（Lightbox で load した audio は hist-card でも再利用）
+
+#### 実装 3：viewer.html の音声ボタン
+- settings.js の「保存した画像を開く」ボタン：query param `audioPath` / `audioMime` を追加
+- viewer.html：右下に 48×48 の丸スピーカーボタン（CSS）、初期 `display:none`
+- viewer.js：audioPath パラメータがあればボタン表示、クリックで `READ_FILE_CHUNKS_B64` で音声取得 → Blob URL → HTMLAudioElement で loop 再生
+- window close 時に Blob URL revoke
+
+#### 動作確認項目
+- **Native 変更なし**（native v1.11.1 維持）
+- 保存履歴タブで複数エントリの🔇アイコンをクリック → **同時再生**（前の音は止まらない）
+- **Lightbox**（サムネクリック拡大）で音声ありエントリに🔇ボタンが表示、クリックで再生
+- **viewer.html**（「保存した画像を開く」）で音声ありエントリは右下に🔇ボタン、クリックで再生
+- hist-card / Lightbox どちらで再生してもアイコン状態が同期（緑背景と🔊表示）
+- viewer.html は独立ページなので hist-card とはアイコン同期なし（viewer 内でのみ状態管理）
+
+---
+
 ## [1.31.10] - 2026-04-24
 
 ### Fixed — Native 側自動リネームが保存履歴に反映されない問題（GROUP-31 unique-path）

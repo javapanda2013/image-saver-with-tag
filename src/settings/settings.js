@@ -3423,37 +3423,36 @@ function _updateHistCount() {
 
 // ================================================================
 // v1.31.4 GROUP-28 mvdl：保存履歴カードの音声再生制御
+// v1.32.0 GROUP-28 mvdl Phase 2：複数エントリ同時再生＋Lightbox / viewer 対応
 // ================================================================
 // - entry.id をキーに <audio> / Blob URL をキャッシュ（複数回再生の高速化）
-// - 同時再生は 1 エントリのみ（別アイコンをクリックしたら前の再生は停止）
+// - v1.32.0：**複数エントリを同時再生可能**（以前の単一制限を撤廃）
 // - クリックで toggle（停止中 → 再生、再生中 → 停止）
 // - アイコン状態は data-muted 属性で切替（CSS 側で背景色変更）
+// - Lightbox / viewer からも同じ API を呼出可能に _toggleEntryAudio として公開
 // ================================================================
-const _histAudioCache = new Map(); // entry.id → {audio: HTMLAudioElement, blobUrl: string}
-let _histAudioPlayingId = null;
+const _histAudioCache = new Map();   // entry.id → {audio: HTMLAudioElement, blobUrl: string}
+const _histAudioPlayingIds = new Set(); // 現在再生中の entry.id の集合（複数同時 OK）
 
-function _histAudioStopCurrent() {
-  if (!_histAudioPlayingId) return;
-  const cached = _histAudioCache.get(_histAudioPlayingId);
-  if (cached && cached.audio) {
-    try { cached.audio.pause(); cached.audio.currentTime = 0; } catch (_) {}
-  }
-  // アイコン表示を🔇に戻す
-  document.querySelectorAll(`.hist-card[data-entry-id="${_histAudioPlayingId}"] .hist-card-audio-icon`).forEach(btn => {
-    btn.dataset.muted = "1";
-    btn.textContent = "🔇";
+function _updateAudioButtonsForEntry(entryId, playing) {
+  // DOM 上の該当エントリの🔇/🔊ボタン（複数箇所：hist-card / Lightbox）を一括更新
+  document.querySelectorAll(`.hist-card-audio-icon[data-audio-entry-id="${entryId}"]`).forEach(btn => {
+    btn.dataset.muted = playing ? "0" : "1";
+    btn.textContent = playing ? "🔊" : "🔇";
   });
-  _histAudioPlayingId = null;
 }
 
 async function _toggleHistAudio(entry, btn) {
-  // 既に同エントリが再生中なら停止
-  if (_histAudioPlayingId === entry.id) {
-    _histAudioStopCurrent();
+  // 既にこのエントリが再生中なら停止
+  const existing = _histAudioCache.get(entry.id);
+  if (existing && existing.audio && !existing.audio.paused) {
+    try { existing.audio.pause(); existing.audio.currentTime = 0; } catch (_) {}
+    _histAudioPlayingIds.delete(entry.id);
+    _updateAudioButtonsForEntry(entry.id, false);
     return;
   }
-  // 別エントリが再生中なら先に停止
-  _histAudioStopCurrent();
+
+  // v1.32.0：他エントリは停止しない（複数同時再生）
 
   // 必要データ
   const paths = Array.isArray(entry.savePaths) ? entry.savePaths : (entry.savePath ? [entry.savePath] : []);
@@ -3506,6 +3505,15 @@ async function _toggleHistAudio(entry, btn) {
 
     await cached.audio.play();
     _histAudioPlayingId = entry.id;
+    // v1.32.0：再生終了時（audio 側が loop=true だが何らかで pause 状態に）も UI を戻す
+    cached.audio.onpause = () => {
+      if (cached.audio.ended || cached.audio.currentTime === 0) {
+        _histAudioPlayingIds.delete(entry.id);
+        _updateAudioButtonsForEntry(entry.id, false);
+      }
+    };
+    _histAudioPlayingIds.add(entry.id);
+    _updateAudioButtonsForEntry(entry.id, true);
     btn.dataset.muted = "0";
     btn.textContent = "🔊";
   } catch (err) {
@@ -3529,8 +3537,9 @@ function _buildHistCardInner(card, entry, onThumbClick) {
   ).join("");
 
   // v1.31.4 GROUP-28 mvdl：関連音声あり時は wrap 内にスピーカーアイコンを重ねる
+  // v1.32.0：data-audio-entry-id 追加、Lightbox / viewer 等外部からも状態同期できるように
   const audioIconHtml = entry.audioFilename
-    ? `<button class="hist-card-audio-icon" data-muted="1" title="音声再生: ${escHtml(entry.audioFilename)}">🔇</button>`
+    ? `<button class="hist-card-audio-icon" data-muted="${_histAudioPlayingIds.has(entry.id) ? "0" : "1"}" data-audio-entry-id="${entry.id}" title="音声再生: ${escHtml(entry.audioFilename)}">${_histAudioPlayingIds.has(entry.id) ? "🔊" : "🔇"}</button>`
     : "";
   let thumbHtml = `
     <div class="hist-card-thumb-wrap">
@@ -3979,7 +3988,13 @@ function _buildHistCardInner(card, entry, onThumbClick) {
     const filePath = primary.replace(/[\\/]+$/, "") + "\\" + entry.filename;
     // v1.22.9: 拡張ページ viewer.html を開き、大容量 GIF も含めてそこで描画する。
     //   viewer.js 側で FETCH_FILE_AS_DATAURL を叩いて dataUrl / chunksB64 を処理する。
-    const viewerUrl = browser.runtime.getURL("src/viewer/viewer.html") + "?path=" + encodeURIComponent(filePath);
+    // v1.32.0 GROUP-28 mvdl Phase 2：関連音声があれば audioPath / audioMime も query 経由で viewer へ。
+    let viewerUrl = browser.runtime.getURL("src/viewer/viewer.html") + "?path=" + encodeURIComponent(filePath);
+    if (entry.audioFilename) {
+      const audioFilePath = primary.replace(/[\\/]+$/, "") + "\\" + entry.audioFilename;
+      viewerUrl += "&audioPath=" + encodeURIComponent(audioFilePath);
+      viewerUrl += "&audioMime=" + encodeURIComponent(entry.audioMimeType || "audio/webm");
+    }
     window.open(viewerUrl, "_blank");
   });
 
@@ -4072,6 +4087,7 @@ function showGroupLightbox(dataUrls, startIndex, items, globalCtx) {
         <span class="lb-counter"></span>
         <span class="lb-label-all" style="font-size:10px;color:rgba(255,255,255,.6);white-space:nowrap;"></span>
         <span class="lb-filename"></span>
+        <button class="lb-audio hist-card-audio-icon" data-muted="1" title="音声再生" style="display:none; position:relative; left:auto; bottom:auto;">🔇</button>
       </div>
     `;
 
@@ -4163,6 +4179,9 @@ function showGroupLightbox(dataUrls, startIndex, items, globalCtx) {
       downBtn.style.cssText  += `;top:${Math.round(cy + cy / 2 - btn / 2)}px;left:${Math.round(cx - btn / 2)}px;bottom:auto;`;
     }
 
+    // v1.32.0 GROUP-28 mvdl Phase 2：Lightbox の音声ボタン
+    const audioBtn = overlay.querySelector(".lb-audio");
+
     function updateView(idx) {
       currentIdx = idx;
       const entry = items[idx];
@@ -4184,7 +4203,27 @@ function showGroupLightbox(dataUrls, startIndex, items, globalCtx) {
       rightBtn.style.opacity = rtl ? (idx > 0 ? "1" : "0.3")         : (idx < total - 1 ? "1" : "0.3");
       updateGlobalLabel();
       setFixedNavPositions();
+
+      // v1.32.0：現在エントリに音声ファイルがあれば Lightbox の音声ボタンを表示
+      if (entry && entry.audioFilename) {
+        const playing = _histAudioPlayingIds.has(entry.id);
+        audioBtn.style.display = "";
+        audioBtn.dataset.muted = playing ? "0" : "1";
+        audioBtn.dataset.audioEntryId = entry.id;
+        audioBtn.textContent = playing ? "🔊" : "🔇";
+        audioBtn.title = `音声再生: ${entry.audioFilename}`;
+      } else {
+        audioBtn.style.display = "none";
+        audioBtn.removeAttribute("data-audio-entry-id");
+      }
     }
+
+    audioBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const entry = items[currentIdx];
+      if (!entry || !entry.audioFilename) return;
+      _toggleHistAudio(entry, audioBtn);
+    });
 
     if (rtl) {
       leftBtn.addEventListener("click", goPrev);

@@ -8,8 +8,12 @@
 (async () => {
   const params = new URLSearchParams(location.search);
   const filePath = params.get("path") || "";
+  // v1.32.0 GROUP-28 mvdl Phase 2：関連音声パラメータ
+  const audioPath = params.get("audioPath") || "";
+  const audioMime = params.get("audioMime") || "audio/webm";
   const imgEl    = document.getElementById("img");
   const statusEl = document.getElementById("status");
+  const audioBtn = document.getElementById("audio-btn");
 
   function showStatus(msg) {
     statusEl.textContent = msg || "";
@@ -83,5 +87,68 @@
     showError("未知の応答形式です", JSON.stringify(Object.keys(res || {})));
   } catch (err) {
     showError("通信エラー", err?.message || String(err));
+  }
+
+  // v1.32.0 GROUP-28 mvdl Phase 2：音声ボタン有効化
+  if (audioPath && audioBtn) {
+    audioBtn.style.display = "flex";
+    let audio = null;
+    let blobUrl = null;
+
+    audioBtn.addEventListener("click", async () => {
+      if (audio && !audio.paused) {
+        try { audio.pause(); audio.currentTime = 0; } catch (_) {}
+        audioBtn.dataset.muted = "1";
+        audioBtn.textContent = "🔇";
+        return;
+      }
+      if (!audio) {
+        audioBtn.disabled = true;
+        const originalText = audioBtn.textContent;
+        audioBtn.textContent = "⏳";
+        try {
+          // READ_FILE_CHUNKS_B64 で音声ファイル（.webm 等）を PIL を迂回して取得
+          const ares = await browser.runtime.sendMessage({
+            type: "READ_FILE_CHUNKS_B64",
+            path: audioPath,
+          });
+          if (!ares || !ares.ok || !Array.isArray(ares.chunksB64)) {
+            console.warn("[viewer-audio] 音声読込失敗", ares?.error, { path: audioPath });
+            audioBtn.textContent = originalText;
+            audioBtn.disabled = false;
+            return;
+          }
+          const arrays = [];
+          for (const b64 of ares.chunksB64) {
+            const bin = atob(b64);
+            const arr = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+            arrays.push(arr);
+          }
+          const audioBlob = new Blob(arrays, { type: audioMime });
+          blobUrl = URL.createObjectURL(audioBlob);
+          audio = new Audio(blobUrl);
+          audio.loop = true;
+          window.addEventListener("beforeunload", () => {
+            try { if (blobUrl) URL.revokeObjectURL(blobUrl); } catch (_) {}
+            try { if (audio) audio.pause(); } catch (_) {}
+          });
+        } catch (err) {
+          console.warn("[viewer-audio] 音声読込エラー", err);
+          audioBtn.textContent = originalText;
+          audioBtn.disabled = false;
+          return;
+        }
+      }
+      try {
+        await audio.play();
+        audioBtn.dataset.muted = "0";
+        audioBtn.textContent = "🔊";
+      } catch (err) {
+        console.warn("[viewer-audio] 再生エラー", err);
+      } finally {
+        audioBtn.disabled = false;
+      }
+    });
   }
 })();
