@@ -79,6 +79,51 @@ function computeGifSize(origWidth, origHeight) {
 }
 
 // ================================================================
+// v1.31.7 GROUP-28 mvdl hotfix：プレビュー動画のロード（CORS 優先）
+// ================================================================
+/**
+ * 2 段階ロード：
+ * 1. crossOrigin="anonymous" で試行（CORS 対応サーバーならロード成功、MediaStream が
+ *    isolated 扱いされず MediaRecorder で音声録音可能）
+ * 2. エラー時は crossOrigin を外して再ロード（CORS 非対応、GIF のみ保存可能）
+ * 結果を window.__previewCorsLoaded に格納、recordAudio で参照。
+ */
+async function loadPreviewVideo(video, url) {
+  const tryLoad = (withCors) => new Promise((resolve, reject) => {
+    const cleanup = () => {
+      video.removeEventListener("loadedmetadata", onLoad);
+      video.removeEventListener("error", onErr);
+      if (timer) clearTimeout(timer);
+    };
+    const onLoad = () => { cleanup(); resolve(); };
+    const onErr = () => { cleanup(); reject(new Error("load error")); };
+    video.addEventListener("loadedmetadata", onLoad);
+    video.addEventListener("error", onErr);
+    const timer = setTimeout(() => { cleanup(); reject(new Error("timeout")); }, 10_000);
+
+    if (withCors) {
+      video.crossOrigin = "anonymous";
+    } else {
+      video.removeAttribute("crossorigin");
+      video.crossOrigin = null;
+    }
+    video.src = url;
+    video.load();
+  });
+
+  try {
+    await tryLoad(true);
+    window.__previewCorsLoaded = true;
+    console.log("[video_convert] preview loaded WITH crossOrigin=anonymous (CORS OK → audio recording possible)");
+  } catch (corsErr) {
+    console.warn("[video_convert] CORS load failed, retry without crossOrigin:", corsErr.message);
+    await tryLoad(false);
+    window.__previewCorsLoaded = false;
+    console.log("[video_convert] preview loaded WITHOUT crossOrigin (CORS NG → audio recording not possible)");
+  }
+}
+
+// ================================================================
 // Phase 1.5 GROUP-28 mvdl：音声録音（MediaRecorder + captureStream）
 // ================================================================
 /**
@@ -98,6 +143,12 @@ async function recordAudio(previewVideo, durationSec) {
     }
     if (typeof previewVideo.captureStream !== "function") {
       console.warn("[video_convert] captureStream not supported");
+      return resolve(null);
+    }
+    // v1.31.7：CORS 非対応の場合 MediaRecorder が isolation で拒否するので早期 return。
+    // Phase 1.5 の制限として、CORS を送らないサーバーの動画では音声録音不可。
+    if (!window.__previewCorsLoaded) {
+      console.warn("[video_convert] preview not loaded with CORS, audio recording skipped");
       return resolve(null);
     }
 
@@ -254,11 +305,22 @@ async function init() {
     // プレビュー動画
     // v1.31.6 GROUP-28 mvdl hotfix：muted=true だと Firefox captureStream で audio track が
     // 取得できないため、HTML から muted 属性を外し、ここで volume=0 にしてユーザー無音にする。
+    // v1.31.7 GROUP-28 mvdl hotfix：cross-origin 動画で captureStream 経由の MediaRecorder
+    // アクセスが "isolation properties disallow access" で拒否されるため、
+    // まず crossOrigin="anonymous" で試行→CORS 非対応なら crossOrigin 外して再ロード、
+    // という 2 段階ロードを行う。CORS 対応サーバーなら音声録音成功、非対応なら GIF のみ。
     const video = document.getElementById("preview");
     video.volume = 0;
     video.muted = false;
-    video.src = videoUrl;
-    video.load();
+    window.__previewCorsLoaded = false; // recordAudio で参照
+    try {
+      await loadPreviewVideo(video, videoUrl);
+    } catch (loadErr) {
+      console.error("[video_convert] preview video load failed completely:", loadErr);
+      log(`⚠ 動画の読込に失敗しました: ${loadErr.message}`, "error");
+      document.getElementById("convert-btn").disabled = true;
+      return;
+    }
 
     // isSupported チェック
     if (typeof gifshot === "undefined") {

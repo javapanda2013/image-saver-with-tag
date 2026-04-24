@@ -5,6 +5,46 @@
 
 ---
 
+## [1.31.7] - 2026-04-24
+
+### Fixed — cross-origin video で MediaRecorder が isolation 拒否される問題（GROUP-28 mvdl hotfix 4th）
+
+#### 症状（v1.31.6 実測ログ）
+F12 コンソールの詳細ログから真因特定：
+
+```
+[video_convert] stream tracks: audio=1 video=1                ← Audio track 取得成功
+[video_convert] audio track[0]: enabled=true muted=false      ← Track 健全
+[video_convert] audio recording setup failed: DOMException:
+    MediaRecorder.start: The MediaStream's isolation properties
+    disallow access from MediaRecorder
+```
+
+v1.31.6 の `muted` 削除で audio track 自体は取得できるようになったが、**cross-origin 動画**（CORS ヘッダ無し）の場合 Firefox は MediaStream に **isolation フラグ**を立て、MediaRecorder の access を拒否する仕様。これは cross-origin コンテンツの漏洩防止機構。
+
+#### 対策：2 段階ロード（CORS 優先）
+`loadPreviewVideo` ヘルパーを新設：
+
+1. **`video.crossOrigin = "anonymous"`** を設定してロード試行
+   - CORS ヘッダを送るサーバーの動画 → ロード成功、MediaStream が isolated にならず MediaRecorder 利用可能
+   - CORS 非対応サーバー → ロード失敗（timeout or error event）
+2. 失敗時は `crossOrigin` を外して再ロード（GIF 変換用のプレビューは確保、音声録音は不可）
+3. `window.__previewCorsLoaded` に結果を格納
+4. `recordAudio` は冒頭で `window.__previewCorsLoaded === false` なら早期 `null` return（MediaRecorder.start での例外を事前回避）
+
+#### Phase 1.5 の制限として明示
+- **CORS 対応サーバー**（例：archive.org, sample-videos.com 等）の動画 → **GIF + 音声の両方**保存可能
+- **CORS 非対応サーバー**（多くの直 mp4 埋込サイト） → **GIF のみ**保存、音声は録音不可
+- Phase 2 以降で content.js 側でフレーム + 音声抽出する経路を追加し、CORS 非対応でも音声保存できるようにする案あり
+
+#### 動作確認項目
+- **Native 変更なし**（native v1.11.1 維持）
+- CORS 対応動画（archive.org 等）：GIF + .webm 保存、🔇アイコン表示
+- CORS 非対応動画（DMM sample 等）：GIF のみ保存、🔇アイコン非表示、F12 に `CORS load failed, retry without crossOrigin` ログ
+- どちらの場合もクラッシュせず、保存履歴にエントリが正常に追加される
+
+---
+
 ## [1.31.6] - 2026-04-24
 
 ### Fixed — muted 属性で captureStream から audio track が取れない問題（GROUP-28 mvdl hotfix 3rd）
