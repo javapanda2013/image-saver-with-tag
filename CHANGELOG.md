@@ -5,6 +5,83 @@
 
 ---
 
+## [1.33.0] - 2026-04-25
+
+### Added — 設定画面の保存履歴 pageUrl をリンク化（GROUP-32-a）
+
+#### 要望
+設定画面の保存履歴で保存元パス（pageUrl）がテキスト表示のみでクリック不可だった（保存ウィンドウ側は既にリンク化されていた）。
+
+#### 実装
+- `settings.js:3629-3631` の `<div class="hist-card-pageurl">` を `<a class="hist-card-pageurl" href="..." target="_blank" rel="noopener noreferrer">` に変更
+- Q32-2 回答「フル URL 表示のまま `<a>` 化だけ」に従い、ホスト名短縮はしない
+- `settings.html` の CSS に `text-decoration: none` + ホバー時 underline を追加
+
+### Added — 選択した保存履歴の音声を一括 ON/OFF トグル（GROUP-32-b）
+
+#### 要望
+各保存履歴画面（設定画面・保存ウィンドウ）で、選択した保存履歴の音声を一括で再生／停止できるトグルボタンを設置。
+
+#### 実装（設定画面）
+- `settings.html` の一括操作ボタン群に `🔊 音声 ON/OFF` ボタン追加（`#hist-audio-toggle-selected`）
+- `settings.js` に以下を新設：
+  - `_hasPlayingAudioInSelection()`：選択中エントリに再生中があるか
+  - `_selectedEntriesWithAudio()`：選択中かつ audioFilename 持ちエントリ列挙
+  - `_updateAudioToggleSelectedBtn()`：ボタンの disabled と文言（🔊 音声 ON / 🔇 音声 OFF）を更新
+  - `_toggleAudioSelected()`：選択エントリに再生中あり → 全停止、なし → 全再生
+- 選択変化の全契機（全選択／選択解除／個別チェックボックス／グループ選択／renderHistoryGrid）で `_updateAudioToggleSelectedBtn()` 呼出
+
+#### 実装（保存ウィンドウ）
+- `modal.js` の保存履歴タブに選択チェックボックス UI 新設：
+  - 各 `history-item` 右上に `.history-select-box` チェックボックス追加（18×18 アクセントカラー）
+  - `_modalHistSelected` Set を新設（modal ウィンドウ内で独立管理）
+- 形式フィルタの隣に `🔊 音声 ON/OFF` ボタン追加、settings 側と同等のロジック
+- `renderHistory()` 末尾で `_modalUpdateAudioToggleBtn(saveHistory)` 呼出
+
+#### 設計判断
+- 設定画面と保存ウィンドウは**独立した state**（`_histAudioCache` / `_histSelected` ≠ `_modalAudioCache` / `_modalHistSelected`）
+- トグル動作：1 ボタンで「選択中に再生中あり」→全停止、「全停止中」→選択中の音声あり全部を順次再生（Q32-3 の (b)・Q32-4 の (a)）
+- Q32-5 の (b) に従い両画面に設置、保存ウィンドウは選択 UI も合わせて新設
+
+### Changed — 調査ログ削除（GROUP-34-a）
+
+#### 方針
+Q34-1〜Q34-2 回答「調査目的で一時的に設置したものは基本削除、エラー診断に有用な `console.error` / `console.warn` は保持」に従い実施。
+
+#### 削除対象（mvdl Phase 1.5 系の診断ログ、約 30 行）
+- `video_convert.js`：CORS 2 段階ロード結果 / preview state ダンプ / stream tracks / audio track 状態 / MediaRecorder ライフサイクル / 前提エラー警告
+- `background.js`：STASH_CONVERSION_PAYLOAD / CLAIM_CONVERSION_PAYLOAD / OPEN_MODAL_FROM_CONVERSION の payload サイズログ（3 行）
+- `modal.js`：initModal の `_pendingModal keys / CLAIM_CONVERSION_PAYLOAD response / claim payload` ログ（3 行）
+
+#### 保持
+- 全 `console.error`（真のエラー通知）
+- `console.warn` のエラー診断用途（例：`[hist-audio] 音声読込失敗` / `[video_convert] audio promise rejected`）
+- `log()` helper（UI + console 出力、ユーザー通知用）
+- `addLog("INFO"/"ERROR", ...)` 全般（設定画面ログタブ可視）
+
+#### 調査手法の記録
+削除した調査ログの**なぜ仕込んだか・何が分かったか**を `設計書類/10_調査手法ログ履歴.md` に新規記録（将来類似問題の再調査時に参照可能）。
+
+### Files Changed
+- `src/settings/settings.html`（pageUrl CSS + 一括操作ボタン追加）
+- `src/settings/settings.js`（リンク化 + 音声一括トグル）
+- `src/modal/modal.js`（選択 UI 新設 + 音声一括トグル + initModal ログ削除）
+- `src/background/background.js`（STASH/CLAIM ログ削除）
+- `src/video-convert/video_convert.js`（mvdl hotfix 診断ログ削除）
+- `設計書類/10_調査手法ログ履歴.md`（新規）
+- `manifest.json`（1.32.2 → 1.33.0）
+- `native/image_saver.py` は変更なし（v1.11.1 維持）
+
+#### 動作確認項目
+- **Native 変更なし**（v1.11.1 維持）
+- 設定画面の保存履歴で pageUrl 部分がクリックできる（新タブで開く）
+- 設定画面の保存履歴タブ：複数エントリ選択 → 「🔊 音声 ON/OFF」押下で選択中の音声あり全エントリを再生、再押下で全停止
+- 保存ウィンドウの保存履歴タブ：右上にチェックボックス表示、選択 → 「🔊 音声 ON/OFF」で同様
+- 音声なしのみ選択時はボタン無効化
+- 動画変換 → 保存ウィンドウ遷移が console ログなしで正常動作
+
+---
+
 ## [1.32.2] - 2026-04-24
 
 ### Fixed — viewer.html 音声ボタンが表示されない問題（GROUP-28 mvdl hotfix 7th）

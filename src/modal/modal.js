@@ -95,21 +95,14 @@ async function initModal() {
   // v1.31.5 GROUP-28 mvdl hotfix：動画→GIF 変換経由の場合は
   // background の _pendingConversionStash から受け取る（storage.local broadcast 回避）。
   let imageUrl, pageUrl, suggestedFilename, associatedAudio;
-  console.log(`[modal] initModal: _pendingModal keys=${Object.keys(_pendingModal).join(",")}, ` +
-    `__fromConversion=${!!_pendingModal.__fromConversion}`);
   if (_pendingModal.__fromConversion) {
     const claim = await browser.runtime.sendMessage({ type: "CLAIM_CONVERSION_PAYLOAD" });
-    console.log(`[modal] CLAIM_CONVERSION_PAYLOAD response:`, claim);
     if (!claim || !claim.ok || !claim.payload) {
       console.error("[modal] __fromConversion flag but no payload stashed, closing");
       window.close();
       return;
     }
     ({ imageUrl, pageUrl, suggestedFilename, associatedAudio } = claim.payload);
-    console.log(`[modal] claim payload: ` +
-      `imageUrl.length=${imageUrl?.length}, ` +
-      `suggestedFilename=${suggestedFilename}, ` +
-      `hasAudio=${!!associatedAudio}`);
   } else {
     // 通常経路：従来通り storage.local._pendingModal から受け取る
     ({ imageUrl, pageUrl, suggestedFilename } = _pendingModal);
@@ -1151,6 +1144,15 @@ function buildModalHTML(defaultFilename) {
     .history-audio-icon:hover { background: rgba(40,90,180,0.85); }
     .history-audio-icon[data-muted="0"] { background: rgba(40,120,60,0.85); }
 
+    /* v1.33.0 GROUP-32-b：選択チェックボックス（右上） */
+    .history-select-box {
+      position: absolute; right: 6px; top: 6px;
+      width: 18px; height: 18px;
+      cursor: pointer;
+      z-index: 3;
+      accent-color: #4a90e2;
+    }
+
     .history-body {
       padding: 0; overflow: hidden;
       display: flex; flex-direction: column; gap: 2px;
@@ -1473,6 +1475,8 @@ function buildModalHTML(defaultFilename) {
                 <option value="gif">🎞 GIF のみ</option>
                 <option value="audio">🔊 音声付き</option>
               </select>
+              <!-- v1.33.0 GROUP-32-b：選択した履歴の音声を一括ON/OFF -->
+              <button id="history-audio-toggle-selected" class="history-format-filter" title="選択した履歴の音声を一括で再生／停止" disabled>🔊 音声 ON/OFF</button>
             </div>
           </div>
 
@@ -1885,6 +1889,9 @@ function setupModalEvents(
   const _modalAudioCache = new Map(); // entry.id → {audio, blobUrl}
   const _modalAudioPlayingIds = new Set();
 
+  // v1.33.0 GROUP-32-b：保存ウィンドウ側の選択状態管理（音声一括トグル用）
+  const _modalHistSelected = new Set(); // 選択されている entry.id の集合
+
   function _modalUpdateAudioButtonsForEntry(entryId, playing) {
     document.querySelectorAll(`.history-audio-icon[data-audio-entry-id="${entryId}"]`).forEach(btn => {
       btn.dataset.muted = playing ? "0" : "1";
@@ -1952,6 +1959,56 @@ function setupModalEvents(
       btn.disabled = false;
     }
   }
+
+  // v1.33.0 GROUP-32-b：選択した履歴の音声を一括 ON/OFF
+  function _modalHasPlayingAudioInSelection() {
+    for (const id of _modalHistSelected) {
+      if (_modalAudioPlayingIds.has(id)) return true;
+    }
+    return false;
+  }
+
+  function _modalSelectedEntriesWithAudio(historyData) {
+    return (historyData || []).filter(e => _modalHistSelected.has(e.id) && e.audioFilename);
+  }
+
+  function _modalUpdateAudioToggleBtn(historyData) {
+    const btn = document.getElementById("history-audio-toggle-selected");
+    if (!btn) return;
+    const hasAudio = _modalSelectedEntriesWithAudio(historyData).length > 0;
+    btn.disabled = !hasAudio;
+    if (hasAudio) {
+      btn.textContent = _modalHasPlayingAudioInSelection() ? "🔇 音声 OFF" : "🔊 音声 ON";
+    } else {
+      btn.textContent = "🔊 音声 ON/OFF";
+    }
+  }
+
+  async function _modalToggleAudioSelected(historyData) {
+    const targets = _modalSelectedEntriesWithAudio(historyData);
+    if (targets.length === 0) return;
+    const shouldStop = _modalHasPlayingAudioInSelection();
+    if (shouldStop) {
+      for (const entry of targets) {
+        const cached = _modalAudioCache.get(entry.id);
+        if (cached && cached.audio && !cached.audio.paused) {
+          try { cached.audio.pause(); cached.audio.currentTime = 0; } catch (_) {}
+          _modalAudioPlayingIds.delete(entry.id);
+          _modalUpdateAudioButtonsForEntry(entry.id, false);
+        }
+      }
+    } else {
+      for (const entry of targets) {
+        if (_modalAudioPlayingIds.has(entry.id)) continue;
+        const iconBtn = document.querySelector(`.history-audio-icon[data-audio-entry-id="${entry.id}"]`);
+        const useBtn = iconBtn || document.createElement("button");
+        // eslint-disable-next-line no-await-in-loop
+        await _modalToggleAudio(entry, useBtn);
+      }
+    }
+    _modalUpdateAudioToggleBtn(historyData);
+  }
+
   let _histPage     = 0;   // 現在ページ（0始まり）
   let _histPageSize = 100; // 1ページの表示件数（初期値、storage.get で上書き）
   // v1.26.2: ページ内ファーストビュー先行描画・裏読み込みの定数
@@ -2219,6 +2276,13 @@ function setupModalEvents(
     });
   }
 
+  // v1.33.0 GROUP-32-b：選択した履歴の音声を一括 ON/OFF
+  const historyAudioToggleBtn = document.getElementById("history-audio-toggle-selected");
+  if (historyAudioToggleBtn) {
+    historyAudioToggleBtn.addEventListener("click", async () => {
+      await _modalToggleAudioSelected(saveHistory);
+    });
+  }
 
   function renderHistory() {
     const gen = ++_historyRenderGen; // この呼び出しの世代番号を確保
@@ -2310,6 +2374,9 @@ function setupModalEvents(
       if (gen !== _historyRenderGen) return;
       _renderHistoryChunked(list, pageSlice, "normal", gen);
     });
+
+    // v1.33.0 GROUP-32-b：音声一括トグルボタンの状態更新
+    _modalUpdateAudioToggleBtn(saveHistory);
   }
 
   function renderHistoryPager(total) {
@@ -2535,7 +2602,11 @@ function setupModalEvents(
         ? `<button class="history-audio-icon" data-muted="${_modalAudioPlayingIds.has(entry.id) ? "0" : "1"}" data-audio-entry-id="${escapeHtml(entry.id)}" title="音声再生: ${escapeHtml(entry.audioFilename)}">${_modalAudioPlayingIds.has(entry.id) ? "🔊" : "🔇"}</button>`
         : "";
 
+      // v1.33.0 GROUP-32-b：選択チェックボックス（音声一括トグル用）
+      const selectBoxHtml = `<input type="checkbox" class="history-select-box" data-entry-id="${escapeHtml(entry.id)}" title="一括操作対象として選択" ${_modalHistSelected.has(entry.id) ? "checked" : ""} />`;
+
       item["innerHTML"] = `
+        ${selectBoxHtml}
         <div class="history-thumb-placeholder" title="${escapeHtml(pathTitle)}"
           style="cursor:pointer">🖼</div>
         ${audioIconHtml}
@@ -2657,6 +2728,17 @@ function setupModalEvents(
         pageLink.addEventListener("click", (e) => {
           e.stopPropagation();
           window.open(pageLink.dataset.href, "_blank");
+        });
+      }
+
+      // v1.33.0 GROUP-32-b：選択チェックボックス
+      const selectBox = item.querySelector(".history-select-box");
+      if (selectBox) {
+        selectBox.addEventListener("click", (e) => e.stopPropagation());
+        selectBox.addEventListener("change", (e) => {
+          if (e.target.checked) _modalHistSelected.add(entry.id);
+          else                  _modalHistSelected.delete(entry.id);
+          _modalUpdateAudioToggleBtn(allEntries);
         });
       }
 

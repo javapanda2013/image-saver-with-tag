@@ -114,12 +114,10 @@ async function loadPreviewVideo(video, url) {
   try {
     await tryLoad(true);
     window.__previewCorsLoaded = true;
-    console.log("[video_convert] preview loaded WITH crossOrigin=anonymous (CORS OK → audio recording possible)");
   } catch (corsErr) {
-    console.warn("[video_convert] CORS load failed, retry without crossOrigin:", corsErr.message);
+    // CORS 非対応サーバーは fallback で crossOrigin なしロード（この場合は音声録音不可）
     await tryLoad(false);
     window.__previewCorsLoaded = false;
-    console.log("[video_convert] preview loaded WITHOUT crossOrigin (CORS NG → audio recording not possible)");
   }
 }
 
@@ -137,20 +135,11 @@ async function loadPreviewVideo(video, url) {
  */
 async function recordAudio(previewVideo, durationSec) {
   return new Promise((resolve) => {
-    if (!previewVideo) {
-      console.warn("[video_convert] no preview video element");
-      return resolve(null);
-    }
-    if (typeof previewVideo.captureStream !== "function") {
-      console.warn("[video_convert] captureStream not supported");
-      return resolve(null);
-    }
+    if (!previewVideo) return resolve(null);
+    if (typeof previewVideo.captureStream !== "function") return resolve(null);
     // v1.31.7：CORS 非対応の場合 MediaRecorder が isolation で拒否するので早期 return。
     // Phase 1.5 の制限として、CORS を送らないサーバーの動画では音声録音不可。
-    if (!window.__previewCorsLoaded) {
-      console.warn("[video_convert] preview not loaded with CORS, audio recording skipped");
-      return resolve(null);
-    }
+    if (!window.__previewCorsLoaded) return resolve(null);
 
     let recorder = null;
     let resolved = false;
@@ -175,18 +164,11 @@ async function recordAudio(previewVideo, durationSec) {
         previewVideo.muted  = false;
         previewVideo.volume = 0;
 
-        console.log("[video_convert] preview state before play:",
-          `readyState=${previewVideo.readyState}`,
-          `muted=${previewVideo.muted}`,
-          `volume=${previewVideo.volume}`,
-          `duration=${previewVideo.duration}`);
-
         // まず再生を開始（audio pipeline を活性化）
         try { previewVideo.currentTime = 0; } catch (_) {}
         try {
           await previewVideo.play();
         } catch (playErr) {
-          console.warn("[video_convert] preview play() failed:", playErr);
           return resolveOnce(null);
         }
 
@@ -195,43 +177,18 @@ async function recordAudio(previewVideo, durationSec) {
 
         const stream = previewVideo.captureStream();
         const audioTracks = stream.getAudioTracks();
-        const videoTracks = stream.getVideoTracks();
-        console.log("[video_convert] stream tracks:",
-          `audio=${audioTracks.length}`,
-          `video=${videoTracks.length}`);
-        if (!audioTracks || audioTracks.length === 0) {
-          console.info("[video_convert] no audio track (probably no audio in source video or Firefox capture restriction)");
-          return resolveOnce(null);
-        }
-        // track 状態を確認
-        console.log("[video_convert] audio track[0]:",
-          `kind=${audioTracks[0].kind}`,
-          `enabled=${audioTracks[0].enabled}`,
-          `muted=${audioTracks[0].muted}`,
-          `readyState=${audioTracks[0].readyState}`);
-        if (audioTracks[0].muted) {
-          console.warn("[video_convert] audio track is MUTED at source, recording may be silent");
-        }
+        if (!audioTracks || audioTracks.length === 0) return resolveOnce(null);
         audioTracks[0].enabled = true;
 
-        if (!MediaRecorder.isTypeSupported(PHASE1_PARAMS.AUDIO_MIME)) {
-          console.warn("[video_convert] MIME not supported:", PHASE1_PARAMS.AUDIO_MIME);
-          return resolveOnce(null);
-        }
+        if (!MediaRecorder.isTypeSupported(PHASE1_PARAMS.AUDIO_MIME)) return resolveOnce(null);
 
         const audioStream = new MediaStream(audioTracks);
         recorder = new MediaRecorder(audioStream, { mimeType: PHASE1_PARAMS.AUDIO_MIME });
         const chunks = [];
         recorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) {
-            chunks.push(e.data);
-            console.log(`[video_convert] dataavailable: ${e.data.size} bytes`);
-          }
+          if (e.data && e.data.size > 0) chunks.push(e.data);
         };
-        recorder.onstart = () => console.log("[video_convert] recorder started");
         recorder.onstop = () => {
-          const totalSize = chunks.reduce((s, c) => s + c.size, 0);
-          console.log(`[video_convert] recorder stopped, total ${chunks.length} chunks = ${totalSize} bytes`);
           const blob = new Blob(chunks, { type: "audio/webm" });
           resolveOnce(blob);
         };
@@ -265,7 +222,6 @@ async function recordAudio(previewVideo, durationSec) {
       setTimeout(() => {
         if (!resolved) {
           previewVideo.removeEventListener("canplay", onCanPlay);
-          console.warn("[video_convert] preview video not ready in 15s");
           resolveOnce(null);
         }
       }, 15_000);
@@ -483,22 +439,15 @@ function runConversion(videoUrl, pageUrl, origWidth, origHeight) {
       // storage.local._pendingModal に入れると Firefox の onChanged broadcast で
       // 全 extension context にクローンされ 8GB 級メモリ膨張でタブクラッシュしていた。
       // → background.js のメモリに stash し、_pendingModal はフラグだけにする。
-      console.log(`[video_convert] sending STASH_CONVERSION_PAYLOAD: ` +
-        `imageUrl.length=${obj.image.length}, ` +
-        `suggestedFilename=${suggestedFilename}, ` +
-        `hasAudio=${!!associatedAudio}` +
-        (associatedAudio ? `, audioDataUrl.length=${associatedAudio.dataUrl.length}` : ""));
-      const stashRes = await browser.runtime.sendMessage({
+      await browser.runtime.sendMessage({
         type: "STASH_CONVERSION_PAYLOAD",
         imageUrl: obj.image,
         pageUrl: pageUrl || "",
         suggestedFilename,
         associatedAudio,
       });
-      console.log(`[video_convert] STASH result:`, stashRes);
 
-      const openRes = await browser.runtime.sendMessage({ type: "OPEN_MODAL_FROM_CONVERSION" });
-      console.log(`[video_convert] OPEN_MODAL_FROM_CONVERSION result:`, openRes);
+      await browser.runtime.sendMessage({ type: "OPEN_MODAL_FROM_CONVERSION" });
       // 受領データクリア（次回衝突防止）
       await browser.storage.local.remove("_pendingVideoConvert");
       // v1.31.5：_pendingModal は background 側で既に __fromConversion フラグでセット済。

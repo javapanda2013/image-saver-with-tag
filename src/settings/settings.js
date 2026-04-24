@@ -2252,6 +2252,7 @@ function setupHistoryTab() {
     document.getElementById("hist-group-selected").disabled = _histSelected.size < 2;
     document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
     document.getElementById("hist-sync-global-tags").disabled = _histSelected.size === 0;
+    _updateAudioToggleSelectedBtn();
     renderHistoryGrid();
   });
 
@@ -2265,7 +2266,13 @@ function setupHistoryTab() {
     document.getElementById("hist-group-selected").disabled = true;
     document.getElementById("hist-ungroup-selected").disabled = true;
     document.getElementById("hist-delete-selected").disabled = true;
+    _updateAudioToggleSelectedBtn();
     renderHistoryGrid();
+  });
+
+  // v1.33.0 GROUP-32-b：選択した履歴の音声を一括 ON/OFF
+  document.getElementById("hist-audio-toggle-selected").addEventListener("click", async () => {
+    await _toggleAudioSelected();
   });
 
   document.getElementById("hist-delete-selected").addEventListener("click", async () => {
@@ -2926,6 +2933,7 @@ function renderHistoryGrid() {
     document.getElementById("hist-sync-global-tags").disabled = _histSelected.size === 0;
     document.getElementById("hist-group-selected").disabled = _histSelected.size < 2;
     document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
+    _updateAudioToggleSelectedBtn();
     return;
   }
 
@@ -2942,6 +2950,7 @@ function renderHistoryGrid() {
   document.getElementById("hist-sync-global-tags").disabled = _histSelected.size === 0;
   document.getElementById("hist-group-selected").disabled = _histSelected.size < 2;
   document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
+  _updateAudioToggleSelectedBtn();
 }
 
 function renderHistoryPager(total) {
@@ -3084,6 +3093,7 @@ function renderHistoryGridGrouped(grid, entries) {
         document.getElementById("hist-sync-global-tags").disabled = _histSelected.size === 0;
         document.getElementById("hist-group-selected").disabled = _histSelected.size < 2;
         document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
+        _updateAudioToggleSelectedBtn();
       });
 
       card.appendChild(badge);
@@ -3562,6 +3572,66 @@ async function _toggleHistAudio(entry, btn) {
   }
 }
 
+// v1.33.0 GROUP-32-b：選択した保存履歴の音声を一括でトグル（全停止 or 全再生）
+// - 選択エントリのうち少なくとも 1 件が再生中なら全停止
+// - 全て停止中なら音声ありエントリ全てを再生
+function _hasPlayingAudioInSelection() {
+  for (const id of _histSelected) {
+    if (_histAudioPlayingIds.has(id)) return true;
+  }
+  return false;
+}
+
+function _selectedEntriesWithAudio() {
+  return _historyData.filter(e => _histSelected.has(e.id) && e.audioFilename);
+}
+
+function _updateAudioToggleSelectedBtn() {
+  const btn = document.getElementById("hist-audio-toggle-selected");
+  if (!btn) return;
+  const hasAudio = _selectedEntriesWithAudio().length > 0;
+  btn.disabled = !hasAudio;
+  if (hasAudio) {
+    btn.textContent = _hasPlayingAudioInSelection() ? "🔇 音声 OFF" : "🔊 音声 ON";
+  } else {
+    btn.textContent = "🔊 音声 ON/OFF";
+  }
+}
+
+async function _toggleAudioSelected() {
+  const targets = _selectedEntriesWithAudio();
+  if (targets.length === 0) return;
+  const shouldStop = _hasPlayingAudioInSelection();
+  if (shouldStop) {
+    // 再生中のものを一括停止
+    for (const entry of targets) {
+      const cached = _histAudioCache.get(entry.id);
+      if (cached && cached.audio && !cached.audio.paused) {
+        try { cached.audio.pause(); cached.audio.currentTime = 0; } catch (_) {}
+        _histAudioPlayingIds.delete(entry.id);
+        _updateAudioButtonsForEntry(entry.id, false);
+      }
+    }
+  } else {
+    // 停止中のものを一括再生（_toggleHistAudio は再生中なら停止する挙動なので、停止中のみ直接呼ぶ）
+    for (const entry of targets) {
+      if (_histAudioPlayingIds.has(entry.id)) continue;
+      // ダミー btn を用意して _toggleHistAudio を再利用
+      const iconBtn = document.querySelector(`.hist-card-audio-icon[data-audio-entry-id="${entry.id}"]`);
+      if (iconBtn) {
+        // eslint-disable-next-line no-await-in-loop
+        await _toggleHistAudio(entry, iconBtn);
+      } else {
+        // DOM にボタンがない（別ページ等）場合はダミー element で呼出
+        const dummy = document.createElement("button");
+        // eslint-disable-next-line no-await-in-loop
+        await _toggleHistAudio(entry, dummy);
+      }
+    }
+  }
+  _updateAudioToggleSelectedBtn();
+}
+
 function _buildHistCardInner(card, entry, onThumbClick) {
   card.dataset.entryId = entry.id;
   const paths   = Array.isArray(entry.savePaths) ? entry.savePaths : (entry.savePath ? [entry.savePath] : []);
@@ -3627,7 +3697,7 @@ function _buildHistCardInner(card, entry, onThumbClick) {
   }
 
   const pageUrlHtml = entry.pageUrl
-    ? `<div class="hist-card-pageurl" title="${escHtml(entry.pageUrl)}">${escHtml(entry.pageUrl)}</div>`
+    ? `<a class="hist-card-pageurl" href="${escHtml(entry.pageUrl)}" target="_blank" rel="noopener noreferrer" title="${escHtml(entry.pageUrl)}">${escHtml(entry.pageUrl)}</a>`
     : "";
 
   card.innerHTML = `
@@ -3696,6 +3766,7 @@ function _buildHistCardInner(card, entry, onThumbClick) {
     document.getElementById("hist-sync-global-tags").disabled = _histSelected.size === 0;
     document.getElementById("hist-group-selected").disabled = _histSelected.size < 2;
     document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
+    _updateAudioToggleSelectedBtn();
   });
 
   card.querySelectorAll(".hist-card-tag").forEach(el => {
