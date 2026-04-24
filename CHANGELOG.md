@@ -5,6 +5,52 @@
 
 ---
 
+## [1.31.8] - 2026-04-24
+
+### Fixed — 保存履歴の音声アイコンクリックで `ReferenceError: log is not defined`（GROUP-28 mvdl hotfix 5th）
+
+#### 症状
+v1.31.7 で CORS 対応動画の変換が成功し GIF + .webm の 2 ファイルが保存されるようになった。しかし保存履歴タブの🔇アイコンをクリックすると：
+
+```
+Uncaught (in promise) ReferenceError: log is not defined
+    _toggleHistAudio @ settings.js:3524
+```
+
+音声再生機能が動かない状態。
+
+#### 原因
+`_toggleHistAudio` ヘルパー内で `log()` を使っていたが、settings.js の `log()` は `exportData()` 関数内のローカル関数で、モジュールスコープからは参照不可。
+
+```js
+async function exportData(...) {
+  function log(msg) { ... }  // ← exportData scope 専用
+  ...
+}
+
+function _toggleHistAudio(...) {
+  log("...");  // ❌ ReferenceError
+}
+```
+
+#### 対策
+4 箇所の `log(...)` 呼出を `console.warn(...)` に置換。診断情報はコンソールで確認可能：
+
+- `log('⚠ 音声ファイルのパス情報がありません', 'warn')` → `console.warn('[hist-audio] パス情報がありません', {entry})`
+- `log('⚠ 音声読込失敗: ...', 'warn')` → `console.warn('[hist-audio] 音声読込失敗', ..., {path})`
+- `log('⚠ 音声レスポンス形式が不明です', 'warn')` → `console.warn('[hist-audio] 音声レスポンス形式が不明です', res)`
+- `log('⚠ 音声再生エラー: ...', 'warn')` → `console.warn('[hist-audio] 音声再生エラー', err)`
+
+Native 変更なし（v1.11.1 維持）。
+
+#### 動作確認項目
+- 保存履歴タブで🔇アイコンをクリックしても ReferenceError が出ない
+- 音声再生が開始され、🔇 → 🔊（緑背景）に切替
+- 再クリックで停止、🔊 → 🔇
+- 別エントリのアイコンクリックで前の再生が自動停止
+
+---
+
 ## [1.31.7] - 2026-04-24
 
 ### Fixed — cross-origin video で MediaRecorder が isolation 拒否される問題（GROUP-28 mvdl hotfix 4th）

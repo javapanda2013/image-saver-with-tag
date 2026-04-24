@@ -3459,7 +3459,7 @@ async function _toggleHistAudio(entry, btn) {
   const paths = Array.isArray(entry.savePaths) ? entry.savePaths : (entry.savePath ? [entry.savePath] : []);
   const primary = paths[0];
   if (!primary || !entry.audioFilename) {
-    log(`⚠ 音声ファイルのパス情報がありません`, "warn");
+    console.warn(`[hist-audio] パス情報がありません`, { entry });
     return;
   }
   const audioPath = `${primary.replace(/[\\/]+$/, "")}\\${entry.audioFilename}`;
@@ -3476,7 +3476,7 @@ async function _toggleHistAudio(entry, btn) {
         path: audioPath,
       });
       if (!res || !res.ok) {
-        log(`⚠ 音声読込失敗: ${res?.error || "不明"}`, "warn");
+        console.warn(`[hist-audio] 音声読込失敗`, res?.error || "不明", { path: audioPath });
         btn.disabled = false;
         btn.textContent = originalText;
         return;
@@ -3500,7 +3500,7 @@ async function _toggleHistAudio(entry, btn) {
         }
         blob = new Blob(arrays, { type: res.mime || entry.audioMimeType || "audio/webm" });
       } else {
-        log(`⚠ 音声レスポンス形式が不明です`, "warn");
+        console.warn(`[hist-audio] 音声レスポンス形式が不明です`, res);
         btn.disabled = false;
         btn.textContent = originalText;
         return;
@@ -3521,7 +3521,7 @@ async function _toggleHistAudio(entry, btn) {
     btn.dataset.muted = "0";
     btn.textContent = "🔊";
   } catch (err) {
-    log(`⚠ 音声再生エラー: ${err.message}`, "warn");
+    console.warn(`[hist-audio] 音声再生エラー`, err);
     btn.textContent = originalText;
   } finally {
     btn.disabled = false;
