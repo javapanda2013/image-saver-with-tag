@@ -5,6 +5,34 @@
 
 ---
 
+## [1.33.1] - 2026-04-25
+
+### Fixed — 設定画面の保存履歴で選択チェックボックスが非表示（グループ親タイル以外、v1.31.4 回帰）
+
+#### 症状
+設定画面の保存履歴タブで、**グループの親サムネイル以外のタイル**（非グループの個別タイル／展開後のグループ子タイル）で選択チェックボックスが視覚的に消えていた。ユーザー報告により判明、v1.31.4 から発生。
+
+#### 原因
+v1.31.4（GROUP-28 mvdl Phase 1.5）で `_buildHistCardInner` の thumbHtml を `<div class="hist-card-thumb-wrap">` でラップする構造に変更した際、`.hist-card-thumb-wrap` が `position: relative; width: 100%; height: 100%;` で card 全体を覆うため、DOM 順で後ろにある thumb-wrap の内容（サムネ img）が `.hist-select-box` を視覚的に覆い隠していた（両者同一 stacking context で z-index 未指定のため DOM 順で stack）。
+
+グループ親タイル用の `.hist-group-select-box` は別途 `card.appendChild` で後から追加されるため影響を受けず表示されていた。
+
+#### 対策
+`.hist-select-box` に `z-index: 3` を追加（`.hist-card-audio-icon` の z-index: 2 より上）。DOM 順に依存せず、常に前面表示されるようになる。
+
+#### Files Changed
+- `src/settings/settings.html`（`.hist-select-box` に `z-index: 3` 追加の 1 行）
+- `manifest.json`（1.33.0 → 1.33.1）
+- `native/image_saver.py` は変更なし（v1.11.1 維持）
+
+#### 動作確認項目
+- **Native 変更なし**（v1.11.1 維持）
+- 設定画面保存履歴タブで**非グループの個別タイル左上**に青い選択チェックボックスが表示される
+- グループ展開時の**子タイル左上**にも同様に表示される
+- クリックで選択状態が切り替わり、一括操作ボタン群（削除／タグ追加／音声 ON/OFF 等）の有効／無効が連動する
+
+---
+
 ## [1.33.0] - 2026-04-25
 
 ### Added — 設定画面の保存履歴 pageUrl をリンク化（GROUP-32-a）
