@@ -5,6 +5,40 @@
 
 ---
 
+## [1.31.10] - 2026-04-24
+
+### Fixed — Native 側自動リネームが保存履歴に反映されない問題（GROUP-31 unique-path）
+
+#### 症状
+同じファイル名が既に存在する状態で保存すると、Native Python の `unique_path` が `xxx (1).gif` のように連番を付けるが、**saveHistory は `xxx.gif`（連番なし）のまま記録**されていた。結果として保存履歴タブで「保存した画像を開く」ボタンを押すと「ファイルが存在しません: E:\xxx.gif」エラー。
+
+GROUP-28 mvdl（動画→GIF + 音声）で GIF と音声の両方にリネームが発生するようになり顕在化したが、**v1.23.0 頃から潜在していた既存課題**。
+
+#### 原因
+`handleSave` / `handleSaveMulti` は Native の応答 `res.savedPath`（実際の保存パス）を無視し、`effectiveFilename`（当初のファイル名）を saveHistory に記録していた。
+
+```js
+// 従来
+let res = await sendNative({ cmd: "SAVE_IMAGE", ..., savePath: fullPath });
+// res.savedPath を使わず
+await addSaveHistory({ filename: effectiveFilename, ... });
+```
+
+#### 対策
+- `handleSave`：GIF / audio の各 Native 応答から `res.savedPath` を抽出し、実ファイル名を計算して saveHistory に記録
+- `handleSaveMulti`：最初の成功時の実ファイル名を採用（複数 savePath の場合、保存履歴は 1 filename 構造）
+- **GIF と音声のファイル名を同期**：GIF が `xxx (1).gif` にリネームされた場合、音声側も `xxx (1).webm` に揃える（以前は音声がベース名のまま保存され対応がずれていた）
+- 自動リネーム発生時は `addLog("INFO", "Native が自動リネーム: xxx.gif → xxx (1).gif")` でログ出力
+
+#### 動作確認項目
+- **Native 変更なし**（native v1.11.1 維持、既存 `savedPath` 応答フィールドを活用）
+- 同名ファイルがある状態で保存 → `xxx (1).gif` で保存されつつ、保存履歴の「保存した画像を開く」が正常動作
+- 動画→GIF 変換時、GIF と音声が同じ連番で保存される（例：`xxx (1).gif` + `xxx (1).webm`）
+- 動作ログタブで「Native が自動リネーム」ログが出て、リネーム発生を確認できる
+- 通常保存（リネーム不要ケース）は従来通り動作
+
+---
+
 ## [1.31.9] - 2026-04-24
 
 ### Fixed — 音声再生が UnidentifiedImageError で失敗する問題（GROUP-28 mvdl hotfix 6th）

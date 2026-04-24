@@ -871,12 +871,27 @@ async function handleSave(payload) {
     }
     if (!res.ok) throw new Error(res.error || "不明なエラー");
 
-    addLog("INFO", `保存成功: ${fullPath}`);
+    // v1.31.10：Native が unique_path でリネームした場合（例 "xxx.gif" → "xxx (1).gif"）、
+    // res.savedPath から実際のパスを抽出して saveHistory と整合させる。
+    // 従来は effectiveFilename のまま記録していたため「保存した画像を開く」で
+    // 「ファイルが存在しません」エラーになっていた。
+    const actualSavedPath = res.savedPath || fullPath;
+    const actualSavedFilename = actualSavedPath.replace(/^.*[\\/]/, "");
+    if (actualSavedFilename !== effectiveFilename) {
+      addLog("INFO", `Native が自動リネーム: ${effectiveFilename} → ${actualSavedFilename}`);
+    }
+    addLog("INFO", `保存成功: ${actualSavedPath}`);
     await browser.storage.local.set({ lastSaveDir: savePath });
 
     // v1.31.4 GROUP-28 mvdl：関連音声ファイルを同フォルダに書き出す
+    // v1.31.10：GIF が Native 側でリネームされた場合、音声側も同じベース名に合わせる
+    //（GIF "xxx (1).gif" + 音声 "xxx.webm" だと対応がずれるため）
+    let actualAudioFilename = null;
     if (audioFilename && associatedAudio && associatedAudio.dataUrl) {
-      const audioFullPath = `${savePath}\\${audioFilename}`;
+      // GIF の実ファイル名のステム（拡張子なし）に音声拡張子を付ける
+      const savedStem = actualSavedFilename.replace(/\.[^.]*$/, "");
+      const syncedAudioFilename = `${savedStem}.${associatedAudio.extension}`;
+      const audioFullPath = `${savePath}\\${syncedAudioFilename}`;
       try {
         const audioRes = await sendNative({
           cmd: "SAVE_IMAGE_BASE64",
@@ -884,7 +899,10 @@ async function handleSave(payload) {
           savePath: audioFullPath,
         });
         if (audioRes.ok) {
-          addLog("INFO", `関連音声保存成功: ${audioFullPath}`);
+          // 音声側も Native で独自に unique_path が走る場合がある
+          const audioActualPath = audioRes.savedPath || audioFullPath;
+          actualAudioFilename = audioActualPath.replace(/^.*[\\/]/, "");
+          addLog("INFO", `関連音声保存成功: ${audioActualPath}`);
         } else {
           addLog("WARN", `関連音声保存失敗: ${audioFullPath}`, audioRes.error || "");
         }
@@ -916,14 +934,17 @@ async function handleSave(payload) {
     const effectiveThumbH = thumbDataUrl ? thumbHeight : (pyThumb?.height || null);
 
     await addSaveHistory({
-      imageUrl, filename: effectiveFilename, savePath, tags: allTags, authors: resolvedAuthors, pageUrl,
+      imageUrl,
+      // v1.31.10：Native 側 unique_path による自動リネーム後の実ファイル名を記録
+      filename: actualSavedFilename,
+      savePath, tags: allTags, authors: resolvedAuthors, pageUrl,
       thumbDataUrl: effectiveThumbDataUrl,
       thumbWidth:   effectiveThumbW,
       thumbHeight:  effectiveThumbH,
       sessionId:    sessionId    || null,
       sessionIndex: sessionIndex || null,
-      // v1.31.4 GROUP-28 mvdl：関連音声メタ
-      audioFilename,
+      // v1.31.4 GROUP-28 mvdl：関連音声メタ（v1.31.10：Native 実保存名を反映）
+      audioFilename: actualAudioFilename,
       audioMimeType:    (associatedAudio && associatedAudio.mimeType) || null,
       audioDurationSec: (associatedAudio && associatedAudio.durationSec) || null,
     });
@@ -2185,6 +2206,10 @@ async function handleSaveMulti(payload) {
 
   const results = [];
   let pyThumbData = null; // Python側で生成したサムネイル（最初の成功分を使用）
+  // v1.31.10：Native 側 unique_path による自動リネーム後の実ファイル名を
+  // 追跡（saveHistory には最初の成功時の実ファイル名を記録）。
+  let firstActualSavedFilename = null;
+  let firstActualAudioFilename = null;
   for (const rawPath of savePaths) {
     const savePath = normalizePath(rawPath);
     const fullPath = `${savePath}\\${effectiveFilenameMulti}`;
@@ -2199,10 +2224,19 @@ async function handleSaveMulti(payload) {
         }
       }
       if (!res.ok) throw new Error(res.error || "不明なエラー");
-      addLog("INFO", `一括保存成功: ${fullPath}`);
+
+      // v1.31.10：Native 側リネーム追跡
+      const actualSavedPath = res.savedPath || fullPath;
+      const actualSavedFilename = actualSavedPath.replace(/^.*[\\/]/, "");
+      if (actualSavedFilename !== effectiveFilenameMulti) {
+        addLog("INFO", `Native が自動リネーム: ${effectiveFilenameMulti} → ${actualSavedFilename}`);
+      }
+      if (!firstActualSavedFilename) firstActualSavedFilename = actualSavedFilename;
+
+      addLog("INFO", `一括保存成功: ${actualSavedPath}`);
       await browser.storage.local.set({ lastSaveDir: savePath });
       if (allTags.length > 0) {
-        await saveTagRecord({ imageUrl, filename: fullPath, tags: allTags });
+        await saveTagRecord({ imageUrl, filename: actualSavedPath, tags: allTags });
       }
       if (tags && tags.length > 0 && !skipTagRecord) {
         await recordTagDestination(tags, savePath);
@@ -2220,8 +2254,11 @@ async function handleSaveMulti(payload) {
       }
 
       // v1.31.4 GROUP-28 mvdl：関連音声ファイルをこの保存先にも書き出す
+      // v1.31.10：GIF の実ファイル名のステム（拡張子なし）に合わせる
       if (audioFilenameMulti && associatedAudio && associatedAudio.dataUrl) {
-        const audioFullPath = `${savePath}\\${audioFilenameMulti}`;
+        const savedStem = actualSavedFilename.replace(/\.[^.]*$/, "");
+        const syncedAudioFilename = `${savedStem}.${associatedAudio.extension}`;
+        const audioFullPath = `${savePath}\\${syncedAudioFilename}`;
         try {
           const audioRes = await sendNative({
             cmd: "SAVE_IMAGE_BASE64",
@@ -2229,7 +2266,10 @@ async function handleSaveMulti(payload) {
             savePath: audioFullPath,
           });
           if (audioRes.ok) {
-            addLog("INFO", `関連音声保存成功: ${audioFullPath}`);
+            const audioActualPath = audioRes.savedPath || audioFullPath;
+            const audioActualFilename = audioActualPath.replace(/^.*[\\/]/, "");
+            if (!firstActualAudioFilename) firstActualAudioFilename = audioActualFilename;
+            addLog("INFO", `関連音声保存成功: ${audioActualPath}`);
           } else {
             addLog("WARN", `関連音声保存失敗: ${audioFullPath}`, audioRes.error || "");
           }
@@ -2254,14 +2294,17 @@ async function handleSaveMulti(payload) {
     const effectiveThumbW = thumbDataUrl ? thumbWidth  : (pyThumbData?.w  || null);
     const effectiveThumbH = thumbDataUrl ? thumbHeight : (pyThumbData?.h || null);
     await addSaveHistoryMulti({
-      imageUrl, filename: effectiveFilenameMulti, savePaths: successPaths, tags: allTags, authors: resolvedAuthorsMulti, pageUrl,
+      imageUrl,
+      // v1.31.10：Native 側 unique_path による自動リネーム後の実ファイル名を記録
+      filename: firstActualSavedFilename || effectiveFilenameMulti,
+      savePaths: successPaths, tags: allTags, authors: resolvedAuthorsMulti, pageUrl,
       thumbDataUrl: effectiveThumbDataUrl,
       thumbWidth:   effectiveThumbW,
       thumbHeight:  effectiveThumbH,
       sessionId:    sessionId    || null,
       sessionIndex: sessionIndex || null,
-      // v1.31.4 GROUP-28 mvdl：関連音声メタ（ファイル名・MIME・秒数）
-      audioFilename:    audioFilenameMulti,
+      // v1.31.4 GROUP-28 mvdl / v1.31.10：Native 実保存名を反映
+      audioFilename:    firstActualAudioFilename,
       audioMimeType:    (associatedAudio && associatedAudio.mimeType) || null,
       audioDurationSec: (associatedAudio && associatedAudio.durationSec) || null,
     });
