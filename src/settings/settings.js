@@ -47,6 +47,8 @@ let _histSourceFilter  = "";
 // v1.32.2 GROUP-28 mvdl：GIF のみチェックボックスをプルダウン化、音声付きフィルタ追加
 // "all" | "gif" | "audio"
 let _histFormatFilter  = "all";
+// v1.37.0 GROUP-36-fav-filter：お気に入りのみ表示トグル（独立フィルタ、他フィルタと AND 結合）
+let _histFavFilter     = false;
 
 // 開いているタグ行のセット（折りたたみ状態の管理）
 const openTags = new Set();
@@ -2164,7 +2166,8 @@ function setupHistoryTab() {
       _histFilterTagChips.length === 0 &&
       _histFilterAuthorChips.length === 0 &&
       !_histSourceFilter &&
-      _histFormatFilter === "all";
+      _histFormatFilter === "all" &&
+      !_histFavFilter; // v1.37.0 GROUP-36-fav-filter
   }
   _updateSelectAllBtn = updateSelectAllBtn; // グローバル参照を更新
 
@@ -2247,7 +2250,8 @@ function setupHistoryTab() {
       _histFilterTagChips.length === 0 &&
       _histFilterAuthorChips.length === 0 &&
       !_histSourceFilter &&
-      _histFormatFilter === "all"
+      _histFormatFilter === "all" &&
+      !_histFavFilter
     ) return;
     const filtered = _historyData.filter(e => _entryMatchesCurrentFilter(e));
     filtered.forEach(e => _histSelected.add(e.id));
@@ -2261,8 +2265,30 @@ function setupHistoryTab() {
     document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
     document.getElementById("hist-sync-global-tags").disabled = _histSelected.size === 0;
     _updateAudioToggleSelectedBtn();
+    _updateFavBulkButtons();
     renderHistoryGrid();
   });
+
+  // v1.37.0 GROUP-38：処理中モーダル（一括操作中の二重押下防止＋進行表示）
+  // - showBusyModal(message, sub) で表示 / hideBusyModal() で閉じる
+  // - sub は補助テキスト（件数や進捗など）。省略可
+  // - finally で必ず hideBusyModal() を呼ぶこと
+  function showBusyModal(message, sub) {
+    const overlay = document.getElementById("busy-modal-overlay");
+    if (!overlay) return;
+    const msg = document.getElementById("busy-modal-message");
+    const subEl = document.getElementById("busy-modal-sub");
+    if (msg) msg.textContent = message || "処理中…";
+    if (subEl) subEl.textContent = sub || "";
+    overlay.dataset.shown = "1";
+  }
+  function hideBusyModal() {
+    const overlay = document.getElementById("busy-modal-overlay");
+    if (!overlay) return;
+    overlay.dataset.shown = "0";
+    overlay.style.display = "none";
+  }
+  // 公開（modal 側からも import できるよう window scope に置きたい場合は追記、今はローカル）
 
   // v1.35.0 GROUP-35-perf-B：選択クリア＋一括ボタン無効化を一箇所に集約。
   // グループ化／解除でも再利用、renderHistoryGrid を経由しない軽量経路を提供。
@@ -2276,6 +2302,7 @@ function setupHistoryTab() {
       "hist-deselect-all", "hist-add-tag-selected", "hist-add-author-selected",
       "hist-replace-selected", "hist-remove-selected", "hist-sync-global-tags",
       "hist-group-selected", "hist-ungroup-selected", "hist-delete-selected",
+      "hist-fav-add-selected", "hist-fav-remove-selected",
     ];
     for (const id of ids) {
       const el = document.getElementById(id);
@@ -2296,14 +2323,40 @@ function setupHistoryTab() {
     await _toggleAudioSelected();
   });
 
+  // v1.37.0 GROUP-36-fav-bulk：選択した履歴を一括でお気に入り追加
+  document.getElementById("hist-fav-add-selected").addEventListener("click", async () => {
+    if (!_histSelected.size) return;
+    const ids = [..._histSelected];
+    showBusyModal("お気に入り追加中…", `${ids.length} 件`);
+    try {
+      const changed = await _setBulkFavorite(ids, true);
+      showStatus(`${changed} 件をお気に入りに追加しました`);
+    } finally { hideBusyModal(); }
+  });
+
+  // v1.37.0 GROUP-36-fav-bulk：選択した履歴のお気に入りを一括解除
+  document.getElementById("hist-fav-remove-selected").addEventListener("click", async () => {
+    if (!_histSelected.size) return;
+    const ids = [..._histSelected];
+    showBusyModal("お気に入り解除中…", `${ids.length} 件`);
+    try {
+      const changed = await _setBulkFavorite(ids, false);
+      showStatus(`${changed} 件のお気に入りを解除しました`);
+    } finally { hideBusyModal(); }
+  });
+
   document.getElementById("hist-delete-selected").addEventListener("click", async () => {
     if (!_histSelected.size) return;
-    if (!confirm(`選択した ${_histSelected.size} 件を削除しますか？`)) return;
-    const stored = await browser.storage.local.get("saveHistory");
-    const history = (stored.saveHistory || []).filter(e => !_histSelected.has(e.id));
-    await browser.storage.local.set({ saveHistory: history });
-    _histSelected.clear();
-    await renderHistoryTab();
+    const n = _histSelected.size;
+    if (!confirm(`選択した ${n} 件を削除しますか？`)) return;
+    showBusyModal("削除中…", `${n} 件`);
+    try {
+      const stored = await browser.storage.local.get("saveHistory");
+      const history = (stored.saveHistory || []).filter(e => !_histSelected.has(e.id));
+      await browser.storage.local.set({ saveHistory: history });
+      _histSelected.clear();
+      await renderHistoryTab();
+    } finally { hideBusyModal(); }
   });
 
   // 全件削除
@@ -2317,33 +2370,39 @@ function setupHistoryTab() {
   document.getElementById("hist-ungroup-selected").addEventListener("click", async () => {
     if (_histSelected.size < 1) return;
     const ids = [..._histSelected];
-    const stored = await browser.storage.local.get("saveHistory");
-    const history = stored.saveHistory || [];
-    // 選択エントリのみを個別解除（他のメンバーはグループのまま残る）
-    const targets = history.filter(e => ids.includes(e.id) && e.sessionId);
-    if (targets.length === 0) { showStatus("グループに属する履歴が選択されていません", true); return; }
+    // v1.37.0 GROUP-38：処理中モーダル＋先行で選択を視覚クリア
+    showBusyModal("グループ解除中…", `${ids.length} 件`);
+    try {
+      const stored = await browser.storage.local.get("saveHistory");
+      const history = stored.saveHistory || [];
+      // 選択エントリのみを個別解除（他のメンバーはグループのまま残る）
+      const targets = history.filter(e => ids.includes(e.id) && e.sessionId);
+      if (targets.length === 0) { showStatus("グループに属する履歴が選択されていません", true); return; }
 
-    // v1.36.0 GROUP-35-perf-B-2：差分更新で参照する旧 sessionId を取得（更新前に確保）
-    const prevSessionIds = targets.map(e => e.sessionId);
-    const targetIds = targets.map(e => e.id);
+      // v1.36.0 GROUP-35-perf-B-2：差分更新で参照する旧 sessionId を取得（更新前に確保）
+      const prevSessionIds = targets.map(e => e.sessionId);
+      const targetIds = targets.map(e => e.id);
 
-    targets.forEach(entry => {
-      entry.sessionId    = null;
-      entry.sessionIndex = null;
-    });
+      targets.forEach(entry => {
+        entry.sessionId    = null;
+        entry.sessionIndex = null;
+      });
 
-    await browser.storage.local.set({ saveHistory: history });
-    _historyData = history;
-    _histSelected.clear();
-    // v1.35.0 GROUP-35-perf-B：通常表示モードはカード描画に影響しないので軽量更新
-    // v1.36.0 GROUP-35-perf-B-2：グループ表示モードでも差分更新で再構築範囲を限定
-    if (_isHistoryGroupMode()) {
-      _partialRefreshGroupedDom(targetIds, prevSessionIds);
-      _clearSelectionAndDisableBulkButtons();
-    } else {
-      _clearSelectionAndDisableBulkButtons();
+      await browser.storage.local.set({ saveHistory: history });
+      _historyData = history;
+      _histSelected.clear();
+      // v1.35.0 GROUP-35-perf-B：通常表示モードはカード描画に影響しないので軽量更新
+      // v1.36.0 GROUP-35-perf-B-2：グループ表示モードでも差分更新で再構築範囲を限定
+      if (_isHistoryGroupMode()) {
+        _partialRefreshGroupedDom(targetIds, prevSessionIds);
+        _clearSelectionAndDisableBulkButtons();
+      } else {
+        _clearSelectionAndDisableBulkButtons();
+      }
+      showStatus(`${targets.length} 件をグループから解除しました`);
+    } finally {
+      hideBusyModal();
     }
-    showStatus(`${targets.length} 件をグループから解除しました`);
   });
 
 
@@ -2352,35 +2411,41 @@ function setupHistoryTab() {
     const ids = [..._histSelected];
     if (!confirm(`選択した ${ids.length} 件を連続保存グループにまとめますか？\n新しいセッションIDが付与されます。`)) return;
 
-    const stored = await browser.storage.local.get("saveHistory");
-    const history = stored.saveHistory || [];
-    const newSessionId = crypto.randomUUID();
+    // v1.37.0 GROUP-38：処理中モーダル
+    showBusyModal("グループ化中…", `${ids.length} 件`);
+    try {
+      const stored = await browser.storage.local.get("saveHistory");
+      const history = stored.saveHistory || [];
+      const newSessionId = crypto.randomUUID();
 
-    const targets = history
-      .filter(e => ids.includes(e.id))
-      .sort((a, b) => new Date(a.savedAt) - new Date(b.savedAt));
+      const targets = history
+        .filter(e => ids.includes(e.id))
+        .sort((a, b) => new Date(a.savedAt) - new Date(b.savedAt));
 
-    // v1.36.0 GROUP-35-perf-B-2：差分更新で参照する旧 sessionId を取得（更新前に確保）
-    const prevSessionIds = targets.map(e => e.sessionId).filter(Boolean);
-    const targetIds = targets.map(e => e.id);
+      // v1.36.0 GROUP-35-perf-B-2：差分更新で参照する旧 sessionId を取得（更新前に確保）
+      const prevSessionIds = targets.map(e => e.sessionId).filter(Boolean);
+      const targetIds = targets.map(e => e.id);
 
-    targets.forEach((entry, i) => {
-      entry.sessionId    = newSessionId;
-      entry.sessionIndex = i + 1;
-    });
+      targets.forEach((entry, i) => {
+        entry.sessionId    = newSessionId;
+        entry.sessionIndex = i + 1;
+      });
 
-    await browser.storage.local.set({ saveHistory: history });
-    _historyData = history;
-    _histSelected.clear();
-    // v1.35.0 GROUP-35-perf-B：通常表示モードはカード描画に影響しないので軽量更新
-    // v1.36.0 GROUP-35-perf-B-2：グループ表示モードでも差分更新で再構築範囲を限定
-    if (_isHistoryGroupMode()) {
-      _partialRefreshGroupedDom(targetIds, prevSessionIds);
-      _clearSelectionAndDisableBulkButtons();
-    } else {
-      _clearSelectionAndDisableBulkButtons();
+      await browser.storage.local.set({ saveHistory: history });
+      _historyData = history;
+      _histSelected.clear();
+      // v1.35.0 GROUP-35-perf-B：通常表示モードはカード描画に影響しないので軽量更新
+      // v1.36.0 GROUP-35-perf-B-2：グループ表示モードでも差分更新で再構築範囲を限定
+      if (_isHistoryGroupMode()) {
+        _partialRefreshGroupedDom(targetIds, prevSessionIds);
+        _clearSelectionAndDisableBulkButtons();
+      } else {
+        _clearSelectionAndDisableBulkButtons();
+      }
+      showStatus(`${targets.length} 件をグループ化しました`);
+    } finally {
+      hideBusyModal();
     }
-    showStatus(`${targets.length} 件をグループ化しました`);
   });
 
   // 一括タグ追加
@@ -2503,28 +2568,34 @@ function setupHistoryTab() {
       if (!pendingTags.size) return;
       overlay.remove();
 
-      const stored = await browser.storage.local.get("saveHistory");
-      const history = stored.saveHistory || [];
-      let changed = false;
-      for (const entry of history) {
-        if (!targetIds.includes(entry.id)) continue;
-        const current = new Set(entry.tags || []);
-        for (const t of pendingTags) {
-          if (!current.has(t)) { current.add(t); changed = true; }
+      // v1.37.0 GROUP-38：処理中モーダル
+      showBusyModal("タグ追加中…", `${targetIds.length} 件`);
+      try {
+        const stored = await browser.storage.local.get("saveHistory");
+        const history = stored.saveHistory || [];
+        let changed = false;
+        for (const entry of history) {
+          if (!targetIds.includes(entry.id)) continue;
+          const current = new Set(entry.tags || []);
+          for (const t of pendingTags) {
+            if (!current.has(t)) { current.add(t); changed = true; }
+          }
+          entry.tags = [...current];
         }
-        entry.tags = [...current];
-      }
-      if (changed) {
-        await browser.storage.local.set({ saveHistory: history });
-        // globalTagsにも追加
-        const { globalTags } = await browser.storage.local.get("globalTags");
-        const gSet = new Set(globalTags || []);
-        for (const t of pendingTags) gSet.add(t);
-        await browser.storage.local.set({ globalTags: [...gSet] });
-        _historyData = history;
-        for (const id of targetIds) _refreshHistCardByEntryId(id);
-        _updateHistCount();
-        showStatus(`タグを ${pendingTags.size} 件追加しました`);
+        if (changed) {
+          await browser.storage.local.set({ saveHistory: history });
+          // globalTagsにも追加
+          const { globalTags } = await browser.storage.local.get("globalTags");
+          const gSet = new Set(globalTags || []);
+          for (const t of pendingTags) gSet.add(t);
+          await browser.storage.local.set({ globalTags: [...gSet] });
+          _historyData = history;
+          for (const id of targetIds) _refreshHistCardByEntryId(id);
+          _updateHistCount();
+          showStatus(`タグを ${pendingTags.size} 件追加しました`);
+        }
+      } finally {
+        hideBusyModal();
       }
     });
 
@@ -2625,29 +2696,35 @@ function setupHistoryTab() {
       if (!pendingAuthors.size) return;
       overlay.remove();
 
-      const stored = await browser.storage.local.get("saveHistory");
-      const history = stored.saveHistory || [];
-      let changed = false;
-      for (const entry of history) {
-        if (!targetIds.includes(entry.id)) continue;
-        const current = new Set(getEntryAuthors(entry));
-        for (const a of pendingAuthors) {
-          if (!current.has(a)) { current.add(a); changed = true; }
+      // v1.37.0 GROUP-38：処理中モーダル
+      showBusyModal("権利者追加中…", `${targetIds.length} 件`);
+      try {
+        const stored = await browser.storage.local.get("saveHistory");
+        const history = stored.saveHistory || [];
+        let changed = false;
+        for (const entry of history) {
+          if (!targetIds.includes(entry.id)) continue;
+          const current = new Set(getEntryAuthors(entry));
+          for (const a of pendingAuthors) {
+            if (!current.has(a)) { current.add(a); changed = true; }
+          }
+          entry.authors = [...current];
+          delete entry.author; // 旧形式フィールドを削除
         }
-        entry.authors = [...current];
-        delete entry.author; // 旧形式フィールドを削除
-      }
-      if (changed) {
-        await browser.storage.local.set({ saveHistory: history });
-        // globalAuthorsにも追加
-        const { globalAuthors } = await browser.storage.local.get("globalAuthors");
-        const gSet = new Set(globalAuthors || []);
-        for (const a of pendingAuthors) gSet.add(a);
-        await browser.storage.local.set({ globalAuthors: [...gSet] });
-        _historyData = history;
-        for (const id of targetIds) _refreshHistCardByEntryId(id);
-        _updateHistCount();
-        showStatus(`権利者を ${pendingAuthors.size} 件追加しました`);
+        if (changed) {
+          await browser.storage.local.set({ saveHistory: history });
+          // globalAuthorsにも追加
+          const { globalAuthors } = await browser.storage.local.get("globalAuthors");
+          const gSet = new Set(globalAuthors || []);
+          for (const a of pendingAuthors) gSet.add(a);
+          await browser.storage.local.set({ globalAuthors: [...gSet] });
+          _historyData = history;
+          for (const id of targetIds) _refreshHistCardByEntryId(id);
+          _updateHistCount();
+          showStatus(`権利者を ${pendingAuthors.size} 件追加しました`);
+        }
+      } finally {
+        hideBusyModal();
       }
     });
 
@@ -2761,52 +2838,58 @@ function setupHistoryTab() {
 
       overlay.remove();
 
-      const stored = await browser.storage.local.get("saveHistory");
-      const history = stored.saveHistory || [];
-      let processed = 0;
-      for (const entry of history) {
-        if (!targetSet.has(entry.id)) continue;
-        if (kind === "tag") {
-          const tags = entry.tags || [];
-          if (!tags.includes(oldVal)) continue;
-          if (isReplace) {
-            const set = new Set(tags.map(t => (t === oldVal ? newValRaw : t)));
-            entry.tags = [...set];
+      // v1.37.0 GROUP-38：処理中モーダル
+      const verbLabel = isReplace ? "置換" : "除去";
+      showBusyModal(`${verbLabel}中…`, `${targetIds.length} 件`);
+      try {
+        const stored = await browser.storage.local.get("saveHistory");
+        const history = stored.saveHistory || [];
+        let processed = 0;
+        for (const entry of history) {
+          if (!targetSet.has(entry.id)) continue;
+          if (kind === "tag") {
+            const tags = entry.tags || [];
+            if (!tags.includes(oldVal)) continue;
+            if (isReplace) {
+              const set = new Set(tags.map(t => (t === oldVal ? newValRaw : t)));
+              entry.tags = [...set];
+            } else {
+              entry.tags = tags.filter(t => t !== oldVal);
+            }
+            processed++;
           } else {
-            entry.tags = tags.filter(t => t !== oldVal);
+            const authors = getEntryAuthors(entry);
+            if (!authors.includes(oldVal)) continue;
+            if (isReplace) {
+              const set = new Set(authors.map(a => (a === oldVal ? newValRaw : a)));
+              entry.authors = [...set];
+            } else {
+              entry.authors = authors.filter(a => a !== oldVal);
+            }
+            delete entry.author;
+            processed++;
           }
-          processed++;
-        } else {
-          const authors = getEntryAuthors(entry);
-          if (!authors.includes(oldVal)) continue;
-          if (isReplace) {
-            const set = new Set(authors.map(a => (a === oldVal ? newValRaw : a)));
-            entry.authors = [...set];
-          } else {
-            entry.authors = authors.filter(a => a !== oldVal);
-          }
-          delete entry.author;
-          processed++;
         }
-      }
 
-      if (processed > 0) {
-        await browser.storage.local.set({ saveHistory: history });
-        // グローバルカタログにも反映（置換時のみ、新値を追加）
-        if (isReplace) {
-          const key = kind === "tag" ? "globalTags" : "globalAuthors";
-          const { [key]: g } = await browser.storage.local.get(key);
-          const gSet = new Set(g || []);
-          gSet.add(newValRaw);
-          await browser.storage.local.set({ [key]: [...gSet] });
+        if (processed > 0) {
+          await browser.storage.local.set({ saveHistory: history });
+          // グローバルカタログにも反映（置換時のみ、新値を追加）
+          if (isReplace) {
+            const key = kind === "tag" ? "globalTags" : "globalAuthors";
+            const { [key]: g } = await browser.storage.local.get(key);
+            const gSet = new Set(g || []);
+            gSet.add(newValRaw);
+            await browser.storage.local.set({ [key]: [...gSet] });
+          }
+          _historyData = history;
+          for (const id of targetIds) _refreshHistCardByEntryId(id);
+          _updateHistCount();
         }
-        _historyData = history;
-        for (const id of targetIds) _refreshHistCardByEntryId(id);
-        _updateHistCount();
+        const label = kind === "tag" ? "タグ" : "権利者";
+        showStatus(`${processed} 件の${label}を${verbLabel}しました`);
+      } finally {
+        hideBusyModal();
       }
-      const label = kind === "tag" ? "タグ" : "権利者";
-      const verb = isReplace ? "置換" : "除去";
-      showStatus(`${processed} 件の${label}を${verb}しました`);
     });
 
     overlay.querySelector(".pd-cancel").addEventListener("click", () => overlay.remove());
@@ -3032,46 +3115,65 @@ function setupHistoryTab() {
     renderHistoryGrid();
   });
 
+  // v1.37.0 GROUP-36-fav-filter：お気に入りのみ表示する独立トグル
+  document.getElementById("hist-fav-filter-toggle")?.addEventListener("click", (e) => {
+    _histFavFilter = !_histFavFilter;
+    const btn = e.currentTarget;
+    btn.setAttribute("aria-pressed", _histFavFilter ? "true" : "false");
+    btn.textContent = _histFavFilter ? "❤️ お気に入りのみ" : "🤍 お気に入りのみ";
+    btn.style.background = _histFavFilter ? "rgba(220,40,80,0.85)" : "#fff";
+    btn.style.color      = _histFavFilter ? "#fff" : "#444";
+    btn.style.borderColor = _histFavFilter ? "rgba(220,40,80,0.85)" : "#dde";
+    _histPage = 0;
+    updateSelectAllBtn();
+    renderHistoryGrid();
+  });
+
   // タグ・保存先反映ボタン
   // - タグ・サブタグを globalTags に追加
   // - メインタグの保存先を tagDestinations に追記（サブタグは除外）
   document.getElementById("hist-sync-global-tags").addEventListener("click", async () => {
     if (!_histSelected.size) return;
-    const selectedEntries = _historyData.filter(e => _histSelected.has(e.id));
+    showBusyModal("タグ・保存先 反映中…", `${_histSelected.size} 件`);
+    try {
+      const selectedEntries = _historyData.filter(e => _histSelected.has(e.id));
 
-    // globalTags 更新（メイン + サブ）
-    const allTagsFlat = selectedEntries.flatMap(e => e.tags || []);
-    const currentGlobalSet = new Set(globalTags);
-    const newGlobalTagsList = [...new Set(allTagsFlat)].filter(t => !currentGlobalSet.has(t));
-    const newGlobalTags = [...globalTags, ...newGlobalTagsList];
+      // globalTags 更新（メイン + サブ）
+      const allTagsFlat = selectedEntries.flatMap(e => e.tags || []);
+      const currentGlobalSet = new Set(globalTags);
+      const newGlobalTagsList = [...new Set(allTagsFlat)].filter(t => !currentGlobalSet.has(t));
+      const newGlobalTags = [...globalTags, ...newGlobalTagsList];
 
-    // tagDestinations 更新（メインタグのみ・サブタグは除外）
-    let destAddCount = 0;
-    for (const entry of selectedEntries) {
-      const path = Array.isArray(entry.savePaths) ? (entry.savePaths[0] || "") : (entry.savePath || "");
-      if (!path) continue;
-      for (const tag of (entry.tags || [])) {
-        if (!tagDestinations[tag]) tagDestinations[tag] = [];
-        if (!tagDestinations[tag].some(d => d.path === path)) {
-          tagDestinations[tag].push({ id: crypto.randomUUID(), path, label: "" });
-          destAddCount++;
+      // tagDestinations 更新（メインタグのみ・サブタグは除外）
+      let destAddCount = 0;
+      for (const entry of selectedEntries) {
+        const path = Array.isArray(entry.savePaths) ? (entry.savePaths[0] || "") : (entry.savePath || "");
+        if (!path) continue;
+        for (const tag of (entry.tags || [])) {
+          if (!tagDestinations[tag]) tagDestinations[tag] = [];
+          if (!tagDestinations[tag].some(d => d.path === path)) {
+            tagDestinations[tag].push({ id: crypto.randomUUID(), path, label: "" });
+            destAddCount++;
+          }
         }
       }
+
+      if (newGlobalTagsList.length === 0 && destAddCount === 0) {
+        showStatus("すべて反映済みです（新規追加なし）");
+        return;
+      }
+
+      await browser.storage.local.set({ globalTags: newGlobalTags, tagDestinations });
+      globalTags = newGlobalTags;
+
+      const parts = [];
+      if (newGlobalTagsList.length > 0) parts.push(`新規タグ: ${newGlobalTagsList.length} 件`);
+      if (destAddCount > 0) parts.push(`保存先: ${destAddCount} 件`);
+      showStatus(`✅ 反映しました（${parts.join("、")}）`);
+      renderAll();
+    } finally {
+      hideBusyModal();
     }
-
-    if (newGlobalTagsList.length === 0 && destAddCount === 0) {
-      showStatus("すべて反映済みです（新規追加なし）");
-      return;
-    }
-
-    await browser.storage.local.set({ globalTags: newGlobalTags, tagDestinations });
-    globalTags = newGlobalTags;
-
-    const parts = [];
-    if (newGlobalTagsList.length > 0) parts.push(`新規タグ: ${newGlobalTagsList.length} 件`);
-    if (destAddCount > 0) parts.push(`保存先: ${destAddCount} 件`);
-    showStatus(`✅ 反映しました（${parts.join("、")}）`);
-    renderAll();
   });
 }
 
@@ -3103,15 +3205,16 @@ function renderHistoryGrid() {
   const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
   const hasFormatFilter = _histFormatFilter !== "all";
+  const hasFavFilter    = _histFavFilter; // v1.37.0 GROUP-36-fav-filter
 
-  const filtered = (hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter)
+  const filtered = (hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter || hasFavFilter)
     ? _historyData.filter(e => _entryMatchesCurrentFilter(e))
     : _historyData;
 
   // 絞り込み結果をライトボックスのグローバルナビ用に保持
-  _currentFilteredHistory = (hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter) ? filtered : null;
+  _currentFilteredHistory = (hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter || hasFavFilter) ? filtered : null;
 
-  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter;
+  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter || hasFavFilter;
   const totalFiltered = filtered.length;
 
   // ページ範囲補正
@@ -3155,6 +3258,7 @@ function renderHistoryGrid() {
     document.getElementById("hist-group-selected").disabled = _histSelected.size < 2;
     document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
     _updateAudioToggleSelectedBtn();
+    _updateFavBulkButtons();
     return;
   }
 
@@ -3174,6 +3278,7 @@ function renderHistoryGrid() {
   document.getElementById("hist-group-selected").disabled = _histSelected.size < 2;
   document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
   _updateAudioToggleSelectedBtn();
+  _updateFavBulkButtons();
 }
 
 function renderHistoryPager(total) {
@@ -3342,6 +3447,7 @@ function _buildGroupWrapperElement(group) {
     document.getElementById("hist-group-selected").disabled = _histSelected.size < 2;
     document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
     _updateAudioToggleSelectedBtn();
+    _updateFavBulkButtons();
   });
 
   card.appendChild(badge);
@@ -3433,7 +3539,8 @@ function _partialRefreshGroupedDom(targetIds, prevSessionIds) {
   const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
   const hasFormatFilter = _histFormatFilter !== "all";
-  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter;
+  const hasFavFilter    = _histFavFilter;
+  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter || hasFavFilter;
   const filtered = isFiltering
     ? _historyData.filter(e => _entryMatchesCurrentFilter(e))
     : _historyData;
@@ -3603,7 +3710,11 @@ function _entryMatchesCurrentFilter(entry) {
   const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
   const hasFormatFilter = _histFormatFilter !== "all";
-  if (!hasTagFilter && !hasAuthorFilter && !hasSourceFilter && !hasFormatFilter) return true;
+  const hasFavFilter    = _histFavFilter; // v1.37.0 GROUP-36-fav-filter
+  if (!hasTagFilter && !hasAuthorFilter && !hasSourceFilter && !hasFormatFilter && !hasFavFilter) return true;
+
+  // v1.37.0 GROUP-36-fav-filter：お気に入りフィルタ（AND 結合）
+  if (hasFavFilter && !entry.favorite) return false;
 
   // v1.32.2 GROUP-28 mvdl：形式フィルター
   if (_histFormatFilter === "gif" && !/\.gif$/i.test(entry.filename || "")) return false;
@@ -3785,6 +3896,9 @@ function _updateHistToolbarButtons() {
   set("hist-sync-global-tags", n === 0);
   set("hist-group-selected", n < 2);
   set("hist-ungroup-selected", n === 0);
+  // v1.37.0 GROUP-36-fav-bulk
+  set("hist-fav-add-selected", n === 0);
+  set("hist-fav-remove-selected", n === 0);
 }
 
 /** 件数表示を現在の絞り込み状態に応じて更新 */
@@ -3795,7 +3909,8 @@ function _updateHistCount() {
   const hasAuthorFilter = _histFilterAuthorChips.length > 0;
   const hasSourceFilter = !!_histSourceFilter;
   const hasFormatFilter = _histFormatFilter !== "all";
-  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter;
+  const hasFavFilter    = _histFavFilter;
+  const isFiltering = hasTagFilter || hasAuthorFilter || hasSourceFilter || hasFormatFilter || hasFavFilter;
   const filtered = isFiltering
     ? _historyData.filter(_entryMatchesCurrentFilter)
     : _historyData;
@@ -3939,6 +4054,17 @@ function _updateAudioToggleSelectedBtn() {
   }
 }
 
+// v1.37.0 GROUP-36-fav-bulk：選択中のお気に入り追加/解除ボタンの活性状態を更新
+// - 追加：選択件数 > 0 で活性
+// - 解除：選択件数 > 0 で活性（個別判定はせず、単純に選択時のみ押下可能）
+function _updateFavBulkButtons() {
+  const n = _histSelected.size;
+  const addBtn    = document.getElementById("hist-fav-add-selected");
+  const removeBtn = document.getElementById("hist-fav-remove-selected");
+  if (addBtn)    addBtn.disabled    = n === 0;
+  if (removeBtn) removeBtn.disabled = n === 0;
+}
+
 async function _toggleAudioSelected() {
   const targets = _selectedEntriesWithAudio();
   if (targets.length === 0) return;
@@ -3973,6 +4099,63 @@ async function _toggleAudioSelected() {
   _updateAudioToggleSelectedBtn();
 }
 
+// v1.37.0 GROUP-36-fav：単一エントリのお気に入りトグル
+// - storage.local の saveHistory を更新し、メモリの _historyData / 該当 DOM ボタンも同期
+// - 別タブ／modal 側の表示は次回開いたタイミングで反映される
+async function _toggleEntryFavorite(entryId) {
+  const stored = await browser.storage.local.get("saveHistory");
+  const history = stored.saveHistory || [];
+  const entry = history.find(e => e.id === entryId);
+  if (!entry) return;
+  const next = !entry.favorite;
+  entry.favorite = next;
+  await browser.storage.local.set({ saveHistory: history });
+  _historyData = history;
+  // DOM 上の該当ハートボタンを同期
+  _updateFavButtonsForEntry(entryId, next);
+  // フィルタ ON 時は表示集合が変わる可能性があるため再描画
+  if (_histFavFilter && !next) {
+    _histSelected.delete(entryId);
+    renderHistoryGrid();
+  }
+}
+
+// v1.37.0 GROUP-36-fav：選択した複数エントリへ favorite を一括で代入
+async function _setBulkFavorite(targetIds, value) {
+  if (!targetIds || targetIds.length === 0) return 0;
+  const stored = await browser.storage.local.get("saveHistory");
+  const history = stored.saveHistory || [];
+  const idSet = new Set(targetIds);
+  let changed = 0;
+  for (const e of history) {
+    if (idSet.has(e.id) && !!e.favorite !== !!value) {
+      e.favorite = !!value;
+      changed++;
+    }
+  }
+  if (changed > 0) {
+    await browser.storage.local.set({ saveHistory: history });
+    _historyData = history;
+    for (const id of targetIds) _updateFavButtonsForEntry(id, value);
+  }
+  // フィルタ ON で解除した場合は表示集合が変わるため再描画
+  if (_histFavFilter && !value) {
+    for (const id of targetIds) _histSelected.delete(id);
+    renderHistoryGrid();
+  }
+  return changed;
+}
+
+// v1.37.0 GROUP-36-fav：DOM 上の該当エントリのハートボタン（複数箇所：hist-card / Lightbox / modal）を一括更新
+function _updateFavButtonsForEntry(entryId, isFav) {
+  document.querySelectorAll(`.hist-card-fav-btn[data-fav-entry-id="${entryId}"]`).forEach(btn => {
+    btn.dataset.fav = isFav ? "1" : "0";
+    btn.textContent = isFav ? "❤️" : "🤍";
+    btn.title = isFav ? "お気に入り解除" : "お気に入り登録";
+    btn.setAttribute("aria-pressed", isFav ? "true" : "false");
+  });
+}
+
 function _buildHistCardInner(card, entry, onThumbClick) {
   card.dataset.entryId = entry.id;
   const paths   = Array.isArray(entry.savePaths) ? entry.savePaths : (entry.savePath ? [entry.savePath] : []);
@@ -3990,10 +4173,14 @@ function _buildHistCardInner(card, entry, onThumbClick) {
   const audioIconHtml = entry.audioFilename
     ? `<button class="hist-card-audio-icon" data-muted="${_histAudioPlayingIds.has(entry.id) ? "0" : "1"}" data-audio-entry-id="${entry.id}" title="音声再生: ${escHtml(entry.audioFilename)}">${_histAudioPlayingIds.has(entry.id) ? "🔊" : "🔇"}</button>`
     : "";
+  // v1.37.0 GROUP-36-fav-tile：右上にお気に入りハートボタン
+  const isFav = !!entry.favorite;
+  const favBtnHtml = `<button class="hist-card-fav-btn" data-fav-entry-id="${entry.id}" data-fav="${isFav ? "1" : "0"}" title="${isFav ? "お気に入り解除" : "お気に入り登録"}" aria-pressed="${isFav}">${isFav ? "❤️" : "🤍"}</button>`;
   let thumbHtml = `
     <div class="hist-card-thumb-wrap">
       <div class="hist-card-thumb-placeholder">🖼</div>
       ${audioIconHtml}
+      ${favBtnHtml}
     </div>
   `;
   if (entry.thumbId) {
@@ -4036,6 +4223,17 @@ function _buildHistCardInner(card, entry, onThumbClick) {
       }
     }, 0);
   }
+  // v1.37.0 GROUP-36-fav-tile：お気に入りハートボタンのクリックハンドラ
+  setTimeout(() => {
+    const favBtn = card.querySelector(".hist-card-fav-btn");
+    if (favBtn && !favBtn.dataset.handlerAttached) {
+      favBtn.dataset.handlerAttached = "1";
+      favBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await _toggleEntryFavorite(entry.id);
+      });
+    }
+  }, 0);
 
   const pageUrlHtml = entry.pageUrl
     ? `<a class="hist-card-pageurl" href="${escHtml(entry.pageUrl)}" target="_blank" rel="noopener noreferrer" title="${escHtml(entry.pageUrl)}">${escHtml(entry.pageUrl)}</a>`
@@ -4110,6 +4308,7 @@ function _buildHistCardInner(card, entry, onThumbClick) {
     document.getElementById("hist-group-selected").disabled = _histSelected.size < 2;
     document.getElementById("hist-ungroup-selected").disabled = _histSelected.size === 0;
     _updateAudioToggleSelectedBtn();
+    _updateFavBulkButtons();
   });
 
   card.querySelectorAll(".hist-card-tag").forEach(el => {

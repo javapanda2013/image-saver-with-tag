@@ -501,6 +501,21 @@
     }
     .hist-card-audio-icon:hover { background: rgba(40,90,180,0.85); }
     .hist-card-audio-icon[data-muted="0"] { background: rgba(40,120,60,0.85); }
+    /* v1.37.0 GROUP-36-fav-tile：お気に入りハートボタン（右上、チェックボックスは左上に統一） */
+    .hist-card-fav-btn {
+      position: absolute; right: 6px; top: 6px;
+      width: 24px; height: 24px;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.55); color: #fff;
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 50%;
+      cursor: pointer; font-size: 13px;
+      line-height: 1; padding: 0;
+      z-index: 3;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .hist-card-fav-btn:hover { background: rgba(220,40,80,0.85); transform: scale(1.08); }
+    .hist-card-fav-btn[data-fav="1"] { background: rgba(220,40,80,0.85); }
     .hist-card-overlay {
       position: absolute; inset: 0;
       background: linear-gradient(transparent 30%, rgba(0,0,0,0.78));
@@ -1142,6 +1157,8 @@
           <button id="hist-group-selected" class="hist-btn" disabled title="選択した履歴を連続保存したグループとしてまとめます">🔴 グループ化</button>
           <button id="hist-ungroup-selected" class="hist-btn" disabled title="選択したグループを解除します（グループ内の全アイテムのセッションIDを削除）">🔵 グループ解除</button>
           <button id="hist-audio-toggle-selected" class="hist-btn" disabled title="選択した履歴の音声を一括で再生／停止">🔊 音声 ON/OFF</button>
+          <button id="hist-fav-add-selected" class="hist-btn" disabled title="選択した履歴をお気に入りに追加">❤️ お気に入り追加</button>
+          <button id="hist-fav-remove-selected" class="hist-btn" disabled title="選択した履歴のお気に入りを解除">🤍 お気に入り解除</button>
           <button id="hist-delete-selected" class="hist-btn danger delete-guarded" disabled>選択削除</button>
           <button id="hist-delete-period" class="hist-btn danger delete-guarded">期間削除</button>
           <button id="hist-gen-thumbs" class="hist-btn" title="サムネイルがない履歴に対して保存済み画像からサムネイルを生成します">🖼 サムネイル生成</button>
@@ -1175,6 +1192,8 @@
             <option value="gif">🎞 GIF のみ</option>
             <option value="audio">🔊 音声付き</option>
           </select>
+          <!-- v1.37.0 GROUP-36-fav-filter：お気に入りのみ表示する独立トグル -->
+          <button id="hist-fav-filter-toggle" class="hist-btn-sm" title="お気に入りのみ表示" aria-pressed="false" style="font-size:12px;padding:2px 8px;border:1px solid #dde;border-radius:4px;background:#fff;color:#444;cursor:pointer;font-family:inherit;">🤍 お気に入りのみ</button>
         </div>
       </div>
     </div>
@@ -1664,6 +1683,21 @@
     </div>
 
   </div>
+
+  <!-- v1.37.0 GROUP-38：処理中モーダル（一括操作中にユーザー入力をブロック） -->
+  <div id="busy-modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:99999;align-items:center;justify-content:center;font-family:inherit;">
+    <div style="background:#fff;border-radius:8px;padding:18px 22px;min-width:240px;max-width:80%;box-shadow:0 8px 24px rgba(0,0,0,0.2);text-align:center;">
+      <div style="display:flex;justify-content:center;margin-bottom:10px;">
+        <div style="width:32px;height:32px;border:3px solid #e0e0e0;border-top-color:#4a90e2;border-radius:50%;animation:busy-spin 0.8s linear infinite;"></div>
+      </div>
+      <div id="busy-modal-message" style="font-size:13px;color:#333;font-weight:600;line-height:1.4;">処理中…</div>
+      <div id="busy-modal-sub" style="font-size:11px;color:#666;margin-top:4px;"></div>
+    </div>
+  </div>
+  <style>
+    @keyframes busy-spin { to { transform: rotate(360deg); } }
+    #busy-modal-overlay[data-shown="1"] { display: flex !important; }
+  </style>
 
   <!-- JSZip v3.10.1（MIT、GROUP-26-unzip / v1.30.0）: zip インポート展開用 -->
   <script src="../vendor/jszip.min.js"></script>

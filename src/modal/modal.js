@@ -1144,14 +1144,29 @@ function buildModalHTML(defaultFilename) {
     .history-audio-icon:hover { background: rgba(40,90,180,0.85); }
     .history-audio-icon[data-muted="0"] { background: rgba(40,120,60,0.85); }
 
-    /* v1.33.0 GROUP-32-b：選択チェックボックス（右上） */
+    /* v1.33.0 GROUP-32-b → v1.37.0 GROUP-36：選択チェックボックスを左上に統一（設定画面と揃える） */
     .history-select-box {
-      position: absolute; right: 6px; top: 6px;
+      position: absolute; left: 6px; top: 6px;
       width: 18px; height: 18px;
       cursor: pointer;
       z-index: 3;
       accent-color: #4a90e2;
     }
+    /* v1.37.0 GROUP-36-fav-tile：お気に入りハートボタン（右上） */
+    .history-fav-btn {
+      position: absolute; right: 6px; top: 6px;
+      width: 24px; height: 24px;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.55); color: #fff;
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 50%;
+      cursor: pointer; font-size: 13px;
+      line-height: 1; padding: 0;
+      z-index: 3;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .history-fav-btn:hover { background: rgba(220,40,80,0.85); transform: scale(1.08); }
+    .history-fav-btn[data-fav="1"] { background: rgba(220,40,80,0.85); }
 
     .history-body {
       padding: 0; overflow: hidden;
@@ -1477,6 +1492,13 @@ function buildModalHTML(defaultFilename) {
               </select>
               <!-- v1.33.0 GROUP-32-b：選択した履歴の音声を一括ON/OFF -->
               <button id="history-audio-toggle-selected" class="history-format-filter" title="選択した履歴の音声を一括で再生／停止" disabled>🔊 音声 ON/OFF</button>
+              <!-- v1.37.0 GROUP-36-fav：お気に入りのみ表示／一括追加・解除 -->
+              <button id="history-fav-filter-toggle" class="history-format-filter" title="お気に入りのみ表示" aria-pressed="false">🤍 お気に入りのみ</button>
+              <button id="history-fav-add-selected" class="history-format-filter" title="選択した履歴をお気に入りに追加" disabled>❤️ お気に入り追加</button>
+              <button id="history-fav-remove-selected" class="history-format-filter" title="選択した履歴のお気に入りを解除" disabled>🤍 お気に入り解除</button>
+              <!-- v1.37.0 GROUP-37：保存ウィンドウにも全選択／選択解除（v1.33.2 パターン：絞り込み中は絞り込み結果対象） -->
+              <button id="history-select-all" class="history-format-filter" title="現在の絞り込み結果を全選択" disabled>✅ 全選択</button>
+              <button id="history-deselect-all" class="history-format-filter" title="選択をすべて解除" disabled>☐ 選択解除</button>
             </div>
           </div>
 
@@ -2009,6 +2031,94 @@ function setupModalEvents(
     _modalUpdateAudioToggleBtn(historyData);
   }
 
+  // v1.37.0 GROUP-36-fav：保存ウィンドウ側のお気に入りフィルタ状態（独立トグル）
+  let _modalHistFavFilter = false;
+
+  // v1.37.0 GROUP-36-fav：DOM 上のハートボタンを同期
+  function _modalUpdateFavButtonsForEntry(entryId, isFav) {
+    document.querySelectorAll(`.history-fav-btn[data-fav-entry-id="${entryId}"]`).forEach(btn => {
+      btn.dataset.fav = isFav ? "1" : "0";
+      btn.textContent = isFav ? "❤️" : "🤍";
+      btn.title = isFav ? "お気に入り解除" : "お気に入り登録";
+      btn.setAttribute("aria-pressed", isFav ? "true" : "false");
+    });
+  }
+
+  // v1.37.0 GROUP-36-fav：単一エントリのお気に入りトグル（保存ウィンドウ側）
+  async function _modalToggleEntryFavorite(entryId, allEntries) {
+    const stored = await browser.storage.local.get("saveHistory");
+    const history = stored.saveHistory || [];
+    const e = history.find(h => h.id === entryId);
+    if (!e) return;
+    const next = !e.favorite;
+    e.favorite = next;
+    await browser.storage.local.set({ saveHistory: history });
+    // メモリ上の allEntries（renderHistory に渡された配列）も同期
+    if (Array.isArray(allEntries)) {
+      const m = allEntries.find(h => h.id === entryId);
+      if (m) m.favorite = next;
+    }
+    _modalUpdateFavButtonsForEntry(entryId, next);
+    if (_modalHistFavFilter && !next) {
+      _modalHistSelected.delete(entryId);
+      // フィルタ ON で外れる場合は再描画
+      renderHistory();
+    }
+  }
+
+  // v1.37.0 GROUP-36-fav-bulk：保存ウィンドウ側、選択した履歴の favorite を一括代入
+  async function _modalSetBulkFavorite(targetIds, value, allEntries) {
+    if (!targetIds || targetIds.length === 0) return 0;
+    const stored = await browser.storage.local.get("saveHistory");
+    const history = stored.saveHistory || [];
+    const idSet = new Set(targetIds);
+    let changed = 0;
+    for (const h of history) {
+      if (idSet.has(h.id) && !!h.favorite !== !!value) {
+        h.favorite = !!value;
+        changed++;
+      }
+    }
+    if (changed > 0) {
+      await browser.storage.local.set({ saveHistory: history });
+      if (Array.isArray(allEntries)) {
+        for (const h of allEntries) {
+          if (idSet.has(h.id)) h.favorite = !!value;
+        }
+      }
+      for (const id of targetIds) _modalUpdateFavButtonsForEntry(id, value);
+    }
+    if (_modalHistFavFilter && !value) {
+      for (const id of targetIds) _modalHistSelected.delete(id);
+      renderHistory();
+    }
+    return changed;
+  }
+
+  // v1.37.0 GROUP-36-fav-bulk：お気に入り追加／解除ボタンの活性状態
+  function _modalUpdateFavBulkBtns() {
+    const n = _modalHistSelected.size;
+    const addBtn    = document.getElementById("history-fav-add-selected");
+    const removeBtn = document.getElementById("history-fav-remove-selected");
+    if (addBtn)    addBtn.disabled    = n === 0;
+    if (removeBtn) removeBtn.disabled = n === 0;
+  }
+
+  // v1.37.0 GROUP-37：保存ウィンドウの全選択／選択解除ボタンの活性状態
+  // 全選択：絞り込み結果に「未選択」が 1 件以上ある時のみ活性
+  // 選択解除：選択件数 > 0 で活性
+  function _modalUpdateSelectAllBtns(filtered) {
+    const selectAllBtn  = document.getElementById("history-select-all");
+    const deselectBtn   = document.getElementById("history-deselect-all");
+    if (selectAllBtn) {
+      const allSelected = (filtered || []).length > 0 && (filtered || []).every(e => _modalHistSelected.has(e.id));
+      selectAllBtn.disabled = !filtered || filtered.length === 0 || allSelected;
+    }
+    if (deselectBtn) {
+      deselectBtn.disabled = _modalHistSelected.size === 0;
+    }
+  }
+
   let _histPage     = 0;   // 現在ページ（0始まり）
   let _histPageSize = 100; // 1ページの表示件数（初期値、storage.get で上書き）
   // v1.26.2: ページ内ファーストビュー先行描画・裏読み込みの定数
@@ -2284,6 +2394,111 @@ function setupModalEvents(
     });
   }
 
+  // v1.37.0 GROUP-36-fav-filter：お気に入りのみ表示する独立トグル（保存ウィンドウ）
+  const historyFavFilterBtn = document.getElementById("history-fav-filter-toggle");
+  if (historyFavFilterBtn) {
+    historyFavFilterBtn.addEventListener("click", () => {
+      _modalHistFavFilter = !_modalHistFavFilter;
+      historyFavFilterBtn.setAttribute("aria-pressed", _modalHistFavFilter ? "true" : "false");
+      historyFavFilterBtn.textContent = _modalHistFavFilter ? "❤️ お気に入りのみ" : "🤍 お気に入りのみ";
+      _histPage = 0;
+      renderHistory();
+    });
+  }
+
+  // v1.37.0 GROUP-36-fav-bulk：選択した履歴を一括お気に入り追加／解除（GROUP-38：処理中表示）
+  document.getElementById("history-fav-add-selected")?.addEventListener("click", async (e) => {
+    if (!_modalHistSelected.size) return;
+    const btn = e.currentTarget;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "⏳ 処理中…";
+    try {
+      const ids = [..._modalHistSelected];
+      await _modalSetBulkFavorite(ids, true, saveHistory);
+    } finally {
+      btn.textContent = original;
+      _modalUpdateFavBulkBtns();
+    }
+  });
+  document.getElementById("history-fav-remove-selected")?.addEventListener("click", async (e) => {
+    if (!_modalHistSelected.size) return;
+    const btn = e.currentTarget;
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "⏳ 処理中…";
+    try {
+      const ids = [..._modalHistSelected];
+      await _modalSetBulkFavorite(ids, false, saveHistory);
+    } finally {
+      btn.textContent = original;
+      _modalUpdateFavBulkBtns();
+    }
+  });
+
+  // v1.37.0 GROUP-37：保存ウィンドウの全選択／選択解除（v1.33.2 パターン：絞り込み中は絞り込み結果対象）
+  document.getElementById("history-select-all")?.addEventListener("click", () => {
+    // renderHistory と同じフィルタ条件で絞り込み結果を計算
+    const filtered = _modalComputeFiltered();
+    if (!filtered.length) return;
+    for (const e of filtered) _modalHistSelected.add(e.id);
+    // チェックボックス DOM 同期
+    document.querySelectorAll(".history-select-box").forEach(cb => {
+      const id = cb.dataset.entryId;
+      if (id && _modalHistSelected.has(id)) cb.checked = true;
+    });
+    _modalUpdateAudioToggleBtn(saveHistory);
+    _modalUpdateFavBulkBtns();
+    _modalUpdateSelectAllBtns(filtered);
+  });
+  document.getElementById("history-deselect-all")?.addEventListener("click", () => {
+    if (!_modalHistSelected.size) return;
+    _modalHistSelected.clear();
+    document.querySelectorAll(".history-select-box").forEach(cb => { cb.checked = false; });
+    _modalUpdateAudioToggleBtn(saveHistory);
+    _modalUpdateFavBulkBtns();
+    _modalUpdateSelectAllBtns(_modalComputeFiltered());
+  });
+
+  // v1.37.0 GROUP-37：renderHistory と同じフィルタ条件を呼び出す軽量版（全選択ボタン用）
+  function _modalComputeFiltered() {
+    if (!saveHistory || saveHistory.length === 0) return [];
+    const tagChipsLower    = historyFilterTagChips.map(c => c.toLowerCase());
+    const authorChipsLower = historyFilterAuthorChips.map(c => c.toLowerCase());
+    const hasTagFilter     = tagChipsLower.length > 0;
+    const hasAuthFilter    = authorChipsLower.length > 0;
+    let filtered = saveHistory;
+    if (hasTagFilter || hasAuthFilter) {
+      filtered = filtered.filter(e => {
+        const entryTags = (e.tags || []).map(t => t.toLowerCase());
+        const tagMatch = !hasTagFilter || (
+          historyFilterMode === "and"
+            ? tagChipsLower.every(chip => entryTags.some(t => t === chip))
+            : tagChipsLower.some(chip => entryTags.some(t => t === chip))
+        );
+        const eAuthors = (e.authors || (e.author ? [e.author] : [])).map(a => a.toLowerCase());
+        const authorMatch = !hasAuthFilter || (
+          historyFilterMode === "and"
+            ? authorChipsLower.every(chip => eAuthors.some(a => a === chip))
+            : authorChipsLower.some(chip => eAuthors.some(a => a === chip))
+        );
+        if (hasTagFilter && hasAuthFilter) {
+          return historyFilterMode === "and" ? (tagMatch && authorMatch) : (tagMatch || authorMatch);
+        }
+        return tagMatch && authorMatch;
+      });
+    }
+    if (historyFormatFilter === "gif") {
+      filtered = filtered.filter(e => /\.gif$/i.test(e.filename || ""));
+    } else if (historyFormatFilter === "audio") {
+      filtered = filtered.filter(e => !!e.audioFilename);
+    }
+    if (_modalHistFavFilter) {
+      filtered = filtered.filter(e => !!e.favorite);
+    }
+    return filtered;
+  }
+
   function renderHistory() {
     const gen = ++_historyRenderGen; // この呼び出しの世代番号を確保
     const list = document.getElementById("history-list");
@@ -2337,7 +2552,11 @@ function setupModalEvents(
     } else if (historyFormatFilter === "audio") {
       filtered = filtered.filter(e => !!e.audioFilename);
     }
-    const isFiltered = hasTagFilter || hasAuthFilter || historyFormatFilter !== "all";
+    // v1.37.0 GROUP-36-fav-filter：お気に入りのみ表示
+    if (_modalHistFavFilter) {
+      filtered = filtered.filter(e => !!e.favorite);
+    }
+    const isFiltered = hasTagFilter || hasAuthFilter || historyFormatFilter !== "all" || _modalHistFavFilter;
 
     const totalFiltered = filtered.length;
     // ページ範囲を超えないよう補正
@@ -2377,6 +2596,9 @@ function setupModalEvents(
 
     // v1.33.0 GROUP-32-b：音声一括トグルボタンの状態更新
     _modalUpdateAudioToggleBtn(saveHistory);
+    // v1.37.0 GROUP-36/37：お気に入り一括ボタン・全選択／選択解除ボタンの状態更新
+    _modalUpdateFavBulkBtns();
+    _modalUpdateSelectAllBtns(filtered);
   }
 
   function renderHistoryPager(total) {
@@ -2602,11 +2824,16 @@ function setupModalEvents(
         ? `<button class="history-audio-icon" data-muted="${_modalAudioPlayingIds.has(entry.id) ? "0" : "1"}" data-audio-entry-id="${escapeHtml(entry.id)}" title="音声再生: ${escapeHtml(entry.audioFilename)}">${_modalAudioPlayingIds.has(entry.id) ? "🔊" : "🔇"}</button>`
         : "";
 
-      // v1.33.0 GROUP-32-b：選択チェックボックス（音声一括トグル用）
+      // v1.33.0 GROUP-32-b：選択チェックボックス（音声一括トグル用）→ v1.37.0 で左上に統一
       const selectBoxHtml = `<input type="checkbox" class="history-select-box" data-entry-id="${escapeHtml(entry.id)}" title="一括操作対象として選択" ${_modalHistSelected.has(entry.id) ? "checked" : ""} />`;
+
+      // v1.37.0 GROUP-36-fav-tile：右上のお気に入りハートボタン
+      const isFav = !!entry.favorite;
+      const favBtnHtml = `<button class="history-fav-btn" data-fav-entry-id="${escapeHtml(entry.id)}" data-fav="${isFav ? "1" : "0"}" title="${isFav ? "お気に入り解除" : "お気に入り登録"}" aria-pressed="${isFav}">${isFav ? "❤️" : "🤍"}</button>`;
 
       item["innerHTML"] = `
         ${selectBoxHtml}
+        ${favBtnHtml}
         <div class="history-thumb-placeholder" title="${escapeHtml(pathTitle)}"
           style="cursor:pointer">🖼</div>
         ${audioIconHtml}
@@ -2739,6 +2966,16 @@ function setupModalEvents(
           if (e.target.checked) _modalHistSelected.add(entry.id);
           else                  _modalHistSelected.delete(entry.id);
           _modalUpdateAudioToggleBtn(allEntries);
+          _modalUpdateFavBulkBtns();
+        });
+      }
+
+      // v1.37.0 GROUP-36-fav-tile：お気に入りハートボタン
+      const favBtn = item.querySelector(".history-fav-btn");
+      if (favBtn) {
+        favBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await _modalToggleEntryFavorite(entry.id, allEntries);
         });
       }
 
