@@ -3870,6 +3870,99 @@ function _findHistCardsByEntryId(entryId) {
  * - グループ表示中で該当エントリがグループ先頭なら、グループカードの代表表示も更新
  * - グループ件数が変動した場合はバッジも更新
  */
+// v1.39.1 GROUP-42-b：単一エントリの保存履歴カードを部分更新（GIF 再デコード回避）
+//
+// ## 役割
+// - 既存の hist-card 要素を保持したまま、変更があったフィールドだけ DOM 更新
+// - thumb-wrap（GIF/サムネ <img>・音声アイコン・お気に入りハート）には触らない → GIF アニメ再デコード起こらない
+// - 新フィールドや handler を追加した時は本関数も更新する（再登録漏れ対策）
+//
+// ## 更新対象フィールド
+// 1. tags（.hist-card-tags 内）：innerHTML 更新＋ click handler 再登録
+// 2. authors（.hist-card-author-row）：0↔1+ の追加削除も対応＋ click handler 再登録
+// 3. primary path（.hist-card-path text + open-folder/open-file 各 btn の title）
+//
+// ## 再登録が必要な handler（要・部分更新後に必ず attach）
+// - .hist-card-tag click → _applyTagFilter
+// - .hist-tag-del-btn click → タグ削除ロジック
+// - .hist-card-author click → _applyAuthorFilter
+//
+// ## 触らないため再登録不要な handler
+// - .hist-select-box / .hist-card-thumb-wrap 配下（img / audio-icon / fav-btn）
+// - .hist-card-pageurl / .hist-card-btn.* （open-folder / open-file / del / info-edit）
+// - .hist-info-editor 内部要素（パネル全体）
+//
+// 詳細は 設計書類\11_部分更新_ハンドラ再登録ポリシー.md
+function _updateHistCardFields(card, entry) {
+  // (1) tags
+  const tagsEl = card.querySelector(".hist-card-tags");
+  if (tagsEl) {
+    tagsEl.innerHTML = (entry.tags || [])
+      .map(t => `<span class="hist-card-tag" data-tag="${escHtml(t)}">${escHtml(t)}<button class="hist-tag-del-btn delete-guarded" data-tag="${escHtml(t)}" title="${escHtml(t)}を削除" tabindex="-1">×</button></span>`)
+      .join("");
+    tagsEl.querySelectorAll(".hist-card-tag").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        _applyTagFilter(el.dataset.tag.toLowerCase());
+      });
+    });
+    tagsEl.querySelectorAll(".hist-tag-del-btn").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const tag = btn.dataset.tag;
+        if (!confirm(`「${tag}」をこの履歴から削除しますか？`)) return;
+        const stored = await browser.storage.local.get("saveHistory");
+        const history = stored.saveHistory || [];
+        const target = history.find(h => h.id === entry.id);
+        if (target) {
+          target.tags = (target.tags || []).filter(t => t !== tag);
+          await browser.storage.local.set({ saveHistory: history });
+          _historyData = history;
+          _refreshHistCardByEntryId(entry.id);
+          _updateHistCount();
+        }
+      });
+    });
+  }
+
+  // (2) authors（無→有・有→無の追加削除も対応）
+  const entryAuthors = getEntryAuthors(entry);
+  const authorHtml = entryAuthors
+    .map(a => `<span class="hist-card-author" data-author="${escHtml(a)}">✏️ ${escHtml(a)}</span>`)
+    .join("");
+  let authorRow = card.querySelector(".hist-card-author-row");
+  if (entryAuthors.length > 0) {
+    if (!authorRow) {
+      authorRow = document.createElement("div");
+      authorRow.className = "hist-card-author-row";
+      const tagsRow = card.querySelector(".hist-card-tags");
+      if (tagsRow?.parentNode) tagsRow.parentNode.insertBefore(authorRow, tagsRow);
+    }
+    authorRow.innerHTML = authorHtml;
+    authorRow.querySelectorAll(".hist-card-author").forEach(el => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        _applyAuthorFilter(el.dataset.author.toLowerCase());
+      });
+    });
+  } else if (authorRow) {
+    authorRow.remove();
+  }
+
+  // (3) primary path（表示テキスト＋ボタン title 同期）
+  const paths = Array.isArray(entry.savePaths) ? entry.savePaths : (entry.savePath ? [entry.savePath] : []);
+  const primary = paths[0] ?? "";
+  const pathEl = card.querySelector(".hist-card-path");
+  if (pathEl) {
+    pathEl.title = primary;
+    pathEl.textContent = primary || "（パスなし）";
+  }
+  const openFolderBtn = card.querySelector(".hist-card-btn.open-folder");
+  if (openFolderBtn) openFolderBtn.title = primary;
+  const openFileBtn = card.querySelector(".hist-card-btn.open-file");
+  if (openFileBtn) openFileBtn.title = primary && entry.filename ? `${primary}\\${entry.filename}` : "";
+}
+
 function _refreshHistCardByEntryId(entryId) {
   const entry = _historyData.find(h => h.id === entryId);
   const { individualCards, groupWrappers } = _findHistCardsByEntryId(entryId);
@@ -3883,10 +3976,9 @@ function _refreshHistCardByEntryId(entryId) {
       card.remove();
       continue;
     }
-    const wasSelected = card.classList.contains("selected");
-    card.innerHTML = "";
-    _buildHistCardInner(card, entry);
-    card.className = "hist-card" + (wasSelected || _histSelected.has(entry.id) ? " selected" : "");
+    // v1.39.1 GROUP-42-b：thumb-wrap を含む既存 DOM を保持し、変更フィールドのみ部分更新
+    _updateHistCardFields(card, entry);
+    card.className = "hist-card" + (_histSelected.has(entry.id) ? " selected" : "");
   }
 
   // グループカード側（グループ表示モード）
@@ -3924,10 +4016,9 @@ function _refreshGroupWrapper(wrapper, entryId, entryOrNull) {
       if (!entryOrNull) {
         child.remove();
       } else {
-        const wasSelected = child.classList.contains("selected");
-        child.innerHTML = "";
-        _buildHistCardInner(child, entryOrNull);
-        child.className = "hist-card" + (wasSelected || _histSelected.has(entryOrNull.id) ? " selected" : "");
+        // v1.39.1 GROUP-42-b：thumb-wrap を含む既存 DOM を保持し、変更フィールドのみ部分更新
+        _updateHistCardFields(child, entryOrNull);
+        child.className = "hist-card" + (_histSelected.has(entryOrNull.id) ? " selected" : "");
       }
     }
   }
@@ -4212,14 +4303,21 @@ async function _toggleEntryFavorite(entryId) {
   const prev = !!memEntry?.favorite;
   const next = !prev;
 
-  // ① 即時 UI 反映：メモリ＋ DOM＋（必要なら）グリッド再描画
+  // ① 即時 UI 反映：メモリ＋ DOM＋（必要なら）当該タイルのみ除去
   if (memEntry) memEntry.favorite = next;
   _updateFavButtonsForEntry(entryId, next);
-  let needsReRender = false;
+  let removedFromFilter = false;
   if (_histFavFilter && !next) {
+    // v1.39.1 GROUP-42-b：fav-filter ON で当該エントリが外れる時、全体再描画ではなく
+    // 該当タイルだけ DOM 除去（他の GIF タイルの再デコードを避ける）
     _histSelected.delete(entryId);
-    needsReRender = true;
-    renderHistoryGrid();
+    const { individualCards, groupWrappers } = _findHistCardsByEntryId(entryId);
+    for (const card of individualCards) card.remove();
+    for (const wrapper of groupWrappers) {
+      _refreshGroupWrapper(wrapper, entryId, null);
+    }
+    _updateHistCount();
+    removedFromFilter = true;
   }
 
   // ② 裏で永続化、失敗時はロールバック
@@ -4238,8 +4336,9 @@ async function _toggleEntryFavorite(entryId) {
     // ロールバック：DOM／メモリを元に戻す
     if (memEntry) memEntry.favorite = prev;
     _updateFavButtonsForEntry(entryId, prev);
-    if (needsReRender) {
-      // フィルタ ON で解除した結果消えた表示を戻す
+    if (removedFromFilter) {
+      // フィルタ ON で除去したタイルを取り戻すため、全体再描画にフォールバック
+      // （ロールバック経路は稀なので GIF 再デコードコストは許容）
       renderHistoryGrid();
     }
     console.warn("[fav] お気に入りトグル失敗、ロールバック", err);
@@ -4248,6 +4347,7 @@ async function _toggleEntryFavorite(entryId) {
 }
 
 // v1.37.0 GROUP-36-fav：選択した複数エントリへ favorite を一括で代入
+// v1.39.1 GROUP-42-b：fav-filter ON で外れた場合、全体再描画ではなく該当タイルのみ除去
 async function _setBulkFavorite(targetIds, value) {
   if (!targetIds || targetIds.length === 0) return 0;
   const stored = await browser.storage.local.get("saveHistory");
@@ -4265,10 +4365,17 @@ async function _setBulkFavorite(targetIds, value) {
     _historyData = history;
     for (const id of targetIds) _updateFavButtonsForEntry(id, value);
   }
-  // フィルタ ON で解除した場合は表示集合が変わるため再描画
+  // フィルタ ON で解除した場合、該当タイルのみ DOM 除去（GIF 再デコード回避）
   if (_histFavFilter && !value) {
-    for (const id of targetIds) _histSelected.delete(id);
-    renderHistoryGrid();
+    for (const id of targetIds) {
+      _histSelected.delete(id);
+      const { individualCards, groupWrappers } = _findHistCardsByEntryId(id);
+      for (const card of individualCards) card.remove();
+      for (const wrapper of groupWrappers) {
+        _refreshGroupWrapper(wrapper, id, null);
+      }
+    }
+    _updateHistCount();
   }
   return changed;
 }

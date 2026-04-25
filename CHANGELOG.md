@@ -5,6 +5,48 @@
 
 ---
 
+## [1.39.1] - 2026-04-25
+
+### Fixed — 単体エントリ操作時の GIF 再デコードを回避（GROUP-42-b、v1.39.0 ユーザー報告対応）
+
+#### 背景
+ユーザー報告：「保存履歴に gif が存在すると、いいねやタグ追加など単体エントリ操作でも動作が重くなる」。
+原因は保存履歴グリッドが GIF を `<img src="dataUrl">` 方式で表示しており、単体操作で `_refreshHistCardByEntryId(id)` が `card.innerHTML = ""` → `_buildHistCardInner` を再実行していたため、対象タイルの GIF が全フレーム再デコードされていた。可視範囲に他の GIF タイルがあると main thread 競合で体感がさらに悪化。
+
+#### 修正（settings.js）
+- **`_updateHistCardFields(card, entry)` 新設**：thumb-wrap（GIF `<img>` を含む）には触らず、変更フィールド（tags / authors / primary path）だけを部分更新。タグ・作者 chip の click handler も同関数内で再 attach（settings.js は直接 attach 方式なので必要）
+- **`_refreshHistCardByEntryId` を partial update に置換**：`innerHTML = ""` → `_updateHistCardFields` 呼出
+- **`_refreshGroupWrapper` の child cards も同様に partial update**
+- **`_toggleEntryFavorite` の fav-filter drop**：`renderHistoryGrid()` 全件再描画 → 該当タイル `card.remove()` ＋ `_refreshGroupWrapper(wrapper, id, null)`（他の GIF 再デコード回避）。ロールバック経路でのみ全体再描画
+- **`_setBulkFavorite` の fav-filter drop**：同上ループ
+
+#### 修正（modal.js）
+- **`_modalToggleEntryFavorite` の fav-filter drop**：`renderHistory()` 全件再描画 → `.history-item[data-entry-id="..."]` のみ `remove()`。ユーザー報告「保存ウィンドウでお気に入りのみ表示中、お気に入り解除を行うと全保存履歴再描画」の直接対応
+- **`_modalSetBulkFavorite` の fav-filter drop**：同上ループ
+- `history-item` 要素に `dataset.entryId` を新規付与（DOM 検索用）
+- 既存の info-editor save の partial update（meta だけ更新で thumb 保持）はそのまま：modal.js は `#panel-history` への event delegation 方式で handler 管理しているため、partial update 後の再 attach は不要
+
+#### 設計ドキュメント
+- `設計書類\11_部分更新_ハンドラ再登録ポリシー.md` を新設：
+  - 部分更新が必要な背景（GIF 再デコード回避）
+  - settings.js（直接 attach）／ modal.js（event delegation）の方式の違い
+  - `_updateHistCardFields` の更新対象フィールドと再登録ハンドラ一覧
+  - 新フィールド／新ハンドラ追加時の運用フロー＋セルフチェック項目
+
+#### スコープ調査の振り返り
+ユーザーから「スコープ調査はユーザー報告に頼らず、常に全体から行うようにしてください」と指摘を受け、`memory/feedback_communication.md` 項目 16 として運用ルールを追記。
+
+### Files Changed
+- `manifest.json`：1.39.0 → 1.39.1
+- `src/settings/settings.js`：`_updateHistCardFields` 新設、`_refreshHistCardByEntryId` ／ `_refreshGroupWrapper` ／ `_toggleEntryFavorite` ／ `_setBulkFavorite` を partial update / 単一タイル除去に変更
+- `src/modal/modal.js`：`_modalToggleEntryFavorite` ／ `_modalSetBulkFavorite` の fav-filter drop を単一タイル除去に変更、`.history-item` に `data-entry-id` 付与
+- `設計書類/11_部分更新_ハンドラ再登録ポリシー.md`：新設
+
+### Files Unchanged
+- `native/image_saver.py`：Native 変更なし（v1.30.7 のまま）
+
+---
+
 ## [1.39.0] - 2026-04-25
 
 ### Improved — 処理中モーダルのレイアウト調整＋プレビュー画像にキャプション（GROUP-40）

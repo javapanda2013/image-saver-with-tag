@@ -2052,14 +2052,19 @@ function setupModalEvents(
     const prev = !!memEntry?.favorite;
     const next = !prev;
 
-    // ① 即時 UI 反映
+    // ① 即時 UI 反映：メモリ＋ DOM＋（必要なら）当該タイルのみ除去
     if (memEntry) memEntry.favorite = next;
     _modalUpdateFavButtonsForEntry(entryId, next);
-    let needsReRender = false;
+    let removedFromFilter = false;
     if (_modalHistFavFilter && !next) {
+      // v1.39.1 GROUP-42-b：fav-filter ON で当該エントリが外れる時、全体再描画（renderHistory）
+      // ではなく該当タイルだけ DOM 除去（他の GIF タイルの再デコードを避ける）
       _modalHistSelected.delete(entryId);
-      needsReRender = true;
-      renderHistory();
+      const list = document.getElementById("history-list");
+      if (list) {
+        list.querySelectorAll(`.history-item[data-entry-id="${entryId}"]`).forEach(el => el.remove());
+      }
+      removedFromFilter = true;
     }
 
     // ② 裏で永続化、失敗時はロールバック
@@ -2073,7 +2078,10 @@ function setupModalEvents(
     } catch (err) {
       if (memEntry) memEntry.favorite = prev;
       _modalUpdateFavButtonsForEntry(entryId, prev);
-      if (needsReRender) renderHistory();
+      if (removedFromFilter) {
+        // ロールバック時のみ全体再描画で除去タイルを取り戻す（稀ケースなので GIF 再デコードコスト許容）
+        renderHistory();
+      }
       console.warn("[modal-fav] お気に入りトグル失敗、ロールバック", err);
       try { showToast(shadow, `⚠️ お気に入りの保存に失敗しました`, true); } catch (_) {}
     }
@@ -2101,9 +2109,13 @@ function setupModalEvents(
       }
       for (const id of targetIds) _modalUpdateFavButtonsForEntry(id, value);
     }
+    // v1.39.1 GROUP-42-b：fav-filter ON で外れる場合、該当タイルだけ DOM 除去（GIF 再デコード回避）
     if (_modalHistFavFilter && !value) {
-      for (const id of targetIds) _modalHistSelected.delete(id);
-      renderHistory();
+      const list = document.getElementById("history-list");
+      for (const id of targetIds) {
+        _modalHistSelected.delete(id);
+        if (list) list.querySelectorAll(`.history-item[data-entry-id="${id}"]`).forEach(el => el.remove());
+      }
     }
     return changed;
   }
@@ -2799,6 +2811,8 @@ function setupModalEvents(
     // isGroupChild: 展開後の子タイルかどうか（◀▶の動作が変わる）
       const item = document.createElement("div");
       item.className = "history-item";
+      // v1.39.1 GROUP-42-b：fav-filter drop 等での単一タイル除去用に entry id を保持
+      item.dataset.entryId = entry.id;
 
       // savePaths（配列）か savePath（旧形式）を正規化
       const paths = Array.isArray(entry.savePaths)
