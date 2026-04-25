@@ -5,6 +5,72 @@
 
 ---
 
+## [1.36.0] - 2026-04-25
+
+### Performance — グループ表示モードでの差分更新（GROUP-35-perf-B-2）
+
+#### 背景
+v1.35.0 リリース後、ユーザーから提供された Profiler ③ データで、**グループ表示モード**でのグループ化／解除時に依然として `_buildHistCardInner/<` 101.62 MB が消費されることが判明。
+
+v1.35.0 の B（差分更新）は通常表示モードでのみ有効で、グループ表示モードはグループ枠の再構築が必要なため `renderHistoryGrid()` 全件再描画にフォールバックしていた（Q-perf-impl 設計通り）。
+
+ユーザー報告：
+> 「一瞬固まるくらい重い」  
+> 「実際の使用パターンはグループ表示」
+
+→ B の効果が主用途で得られていなかった。
+
+#### 改善：グループ表示モードでも差分更新（GROUP-35-perf-B-2）
+
+`settings.js` を以下のように再構成：
+
+1. **helper 抽出**：
+   - `_computeHistoryGroups(entries)`：page slice → グループ配列の純粋関数
+   - `_buildSingleHistCard(entry)`：単独カード DOM 生成
+   - `_buildGroupWrapperElement(group)`：グループ wrapper DOM 生成（`renderHistoryGridGrouped` から抽出、再利用可能化）
+
+2. **`_partialRefreshGroupedDom(targetIds, prevSessionIds)` 新設**：
+   - 操作前に capture した旧 sessionId と target 集合をもとに「影響を受けるグループ／カード」を判定
+   - 既存 DOM を一旦 detach → 新グルーピングを再計算 → **影響を受けないグループ wrapper / 単独カードはそのまま再 attach**、影響範囲のみ新規 DOM 構築
+   - 全件再描画と比べ `_buildHistCardInner / btoa / structured clone deserialize` を影響範囲内のエントリ数に絞り込み
+
+3. **`hist-group-selected` / `hist-ungroup-selected` ハンドラ更新**：
+   - storage.local.set 前に `prevSessionIds = targets.map(e => e.sessionId)` を確保
+   - グループ表示モードでも `_partialRefreshGroupedDom()` 経路へ
+   - 通常表示モードは v1.35.0 と同じ `_clearSelectionAndDisableBulkButtons()` 軽量更新
+
+#### 期待効果
+- グループ化／解除（グループ表示モード）：**100MB 級 allocation → 5〜20MB（影響範囲のみ）**
+- 主用途のグループ表示モードで体感的な「重さ」が解消される想定
+
+#### 既存挙動の互換性
+- `renderHistoryGridGrouped()` のレンダリング結果は変わらず（helper 抽出のみ、DOM 構造同一）
+- `_buildSingleHistCard` / `_buildGroupWrapperElement` 内のイベントハンドラ（チェックボックス連動・展開ボタン・タグクリック・サムネ Lightbox）はすべて従来通り動作
+- 通常表示モードの挙動は完全に同じ
+
+#### Edge case 対応
+- targets が page slice 外（別ページ） → DOM 操作なし、storage.local 更新のみ
+- 絞り込み中で targets が filter 通過しない → 同上、表示外は触らない
+- 同グループ全選択でグループ化 → 旧 sessionId と新 sessionId 両方が「影響あり」、wrapper 全置き換え
+- 複数グループからのメンバー混合 → 各旧グループ wrapper を再構築（残メンバー数 1 なら単独カード化、0 なら除去）
+
+### Files Changed
+- `src/settings/settings.js`：
+  - `_computeHistoryGroups` / `_buildSingleHistCard` / `_buildGroupWrapperElement` / `_partialRefreshGroupedDom` 新設
+  - `renderHistoryGridGrouped` を helper 利用にリファクタ
+  - `hist-group-selected` / `hist-ungroup-selected` ハンドラを差分パス対応
+- `manifest.json`（1.35.0 → 1.36.0）
+- `native/image_saver.py` は変更なし（v1.11.1 維持）
+
+### 動作確認項目
+- **Native 変更なし**（v1.11.1 維持）
+- **グループ表示モード**でグループ化 / 解除の体感的速度が改善
+- 影響を受けないグループ wrapper / 単独カードは触られず、既存の展開状態（`▼ 折りたたむ` → 中身 DOM）が維持される
+- 通常表示モードは v1.35.0 と同じ挙動
+- 絞り込み中・ページ跨ぎ・複数グループ混合操作で DOM 整合が崩れない
+
+---
+
 ## [1.35.0] - 2026-04-25
 
 ### Performance — 保存履歴サムネキャッシュ＋グループ化処理の差分更新（GROUP-35-perf）
