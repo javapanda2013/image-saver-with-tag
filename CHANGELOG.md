@@ -5,6 +5,32 @@
 
 ---
 
+## [1.38.1] - 2026-04-25
+
+### Fixed — 処理中モーダル完了時の auto-close 削除（Q-ux-B 要件不一致）
+
+#### 経緯
+v1.38.0 で `completeBusyModal` に 1.5 秒の auto-close を入れていたが、Q-ux-B の本来要件は「**画像を表示中なので、閉じる操作はユーザーに任せる**」だった。プレビュー画像（Q-ux-2）はユーザーに鑑賞させるための要素であり、auto-close するとその目的を破壊する。
+
+私は Q-ux-B を Q-ux-2 から切り離して読み、Q-ux-B 起票時の質問文に書いた「短すぎる処理で点滅しないよう」という**自分の懸念**を**ユーザーの回答理由**と勘違いし、独断で auto-close を入れてしまった（CLAUDE.md「ユーザーの要望を勝手に拡張しない」「気付いた判断分岐は気付いた時点で報告」違反）。
+
+#### 修正内容
+- `completeBusyModal` の `setTimeout(1500)` 削除、閉じるボタンクリックでのみクローズ
+- `_busyAutoCloseTimer` ／ `_busyClearAutoCloseTimer` 関連コード削除
+- `showBusyModal` 開始時に `_busyForceHide()` を呼び、連続発火時に古い「完了」モーダルが居残らないよう保証
+
+#### 再発防止
+`memory/feedback_communication.md` 項目 13 を新設：「UX 設計はユーザー心的動線で読む。Q&A は隣接項目との整合性込みで解釈、質問文の懸念列挙を回答理由と勘違いしない」
+
+### Files Changed
+- `manifest.json`：1.38.0 → 1.38.1
+- `src/settings/settings.js`：`completeBusyModal` から auto-close 削除、`showBusyModal` で前 done 状態を強制クリア
+
+### Files Unchanged
+- `native/image_saver.py`：Native 変更なし（v1.30.7 のまま）
+
+---
+
 ## [1.38.0] - 2026-04-25
 
 ### Improved — お気に入りトグルをオプティミスティック更新（v1.37.0 ユーザー指摘）

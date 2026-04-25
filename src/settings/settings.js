@@ -2271,10 +2271,11 @@ function setupHistoryTab() {
 
   // v1.37.0 GROUP-38：処理中モーダル（一括操作中の二重押下防止＋進行表示）
   // v1.38.0：お気に入り画像プレビュー＋完了状態対応（Q-ux-2 / Q-ux-B）
+  // v1.38.1：完了時の auto-close を削除（Q-ux-B「画像を表示中なので閉じる操作はユーザーに任せる」要件）
   //
   // ライフサイクル：
   //   showBusyModal(msg, sub)  → 表示開始（spinner＋お気に入りプレビュー）
-  //   completeBusyModal(doneMsg) → 「✅ 完了」へ遷移、閉じるボタン表示、auto-close 1.5s
+  //   completeBusyModal(doneMsg) → 「✅ 完了」へ遷移、閉じるボタン表示。**閉じるのはユーザー操作のみ**
   //   hideBusyModal()           → 完了状態なら no-op、それ以外は即時非表示（エラー経路向け）
   //
   // 標準パターン（処理ハンドラ）：
@@ -2284,15 +2285,7 @@ function setupHistoryTab() {
   //     completeBusyModal("✅ 完了");
   //   } finally { hideBusyModal(); }   // 完了済なら no-op、エラーなら即閉じ
   let _busyState = "hidden"; // hidden / busy / done
-  let _busyAutoCloseTimer = null;
   let _busyPreviewToken = 0; // 古いプレビュー fetch を破棄するためのトークン
-
-  function _busyClearAutoCloseTimer() {
-    if (_busyAutoCloseTimer) {
-      clearTimeout(_busyAutoCloseTimer);
-      _busyAutoCloseTimer = null;
-    }
-  }
 
   // v1.38.0：お気に入りからランダム 1 件選び、なければ全保存履歴からランダム。サムネ取得＋プレビュー表示
   async function _loadBusyPreview(token) {
@@ -2319,7 +2312,8 @@ function setupHistoryTab() {
   function showBusyModal(message, sub) {
     const overlay = document.getElementById("busy-modal-overlay");
     if (!overlay) return;
-    _busyClearAutoCloseTimer();
+    // v1.38.1：完了状態が残っているなら強制クリア（連続発火時に古いモーダルが居座らないよう）
+    _busyForceHide();
     _busyState = "busy";
     const token = ++_busyPreviewToken;
     // 各要素の状態リセット
@@ -2341,6 +2335,8 @@ function setupHistoryTab() {
     _loadBusyPreview(token);
   }
 
+  // v1.38.1：完了時はプレビュー画像を眺める時間を確保するため auto-close せず、
+  // ユーザーが閉じるボタンを押すまで残す（Q-ux-B 本来要件）
   function completeBusyModal(doneMessage) {
     if (_busyState === "hidden") return; // showBusyModal なしで呼ばれた場合は無視
     _busyState = "done";
@@ -2357,15 +2353,12 @@ function setupHistoryTab() {
       closeBtn.style.display = "inline-block";
       closeBtn.onclick = () => { _busyForceHide(); };
     }
-    // 1.5 秒で auto-close（ユーザーが閉じるボタンで先にクローズしてもよい）
-    _busyClearAutoCloseTimer();
-    _busyAutoCloseTimer = setTimeout(() => { _busyForceHide(); }, 1500);
+    // auto-close なし：プレビュー画像を眺めたいので閉じるのはユーザー操作のみ
   }
 
   function _busyForceHide() {
     const overlay = document.getElementById("busy-modal-overlay");
     if (!overlay) return;
-    _busyClearAutoCloseTimer();
     _busyState = "hidden";
     overlay.dataset.shown = "0";
     overlay.style.display = "none";
