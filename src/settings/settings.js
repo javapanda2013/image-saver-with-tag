@@ -4603,7 +4603,47 @@ function _setupNonGifThumbInPlaceholder(card, entry, onThumbClick) {
 let _gifWorker = null;
 let _gifSessionSeq = 0;
 const _gifSessions = new Map();
-// session = { id, canvas, ctx, ready, frameCount, dims, currentIndex, timerId, entryId }
+// session = { id, canvas, ctx, ready, frameCount, dims, currentIndex, timerId, entryId, thumbId }
+// v1.41.3 GROUP-43 Phase 2-pool：thumbId → session の secondary index（LRU 順）
+// DOM 除去時に Worker session を destroy せず dormant 保持し、同 thumbId 再表示時に
+// canvas を rebind して frame 描画継続することで Worker INIT を skip する。
+// LRU eviction：dormant 状態のものを古い順に destroy。active（canvas != null）は対象外。
+const _gifSessionsByThumbId = new Map();
+const GIF_SESSION_LRU_MAX_ENTRIES = 30;
+
+function _gifThumbCacheGet(thumbId) {
+  if (!thumbId) return null;
+  const sess = _gifSessionsByThumbId.get(thumbId);
+  if (!sess) return null;
+  // LRU 末尾移動
+  _gifSessionsByThumbId.delete(thumbId);
+  _gifSessionsByThumbId.set(thumbId, sess);
+  return sess;
+}
+
+function _gifThumbCachePut(thumbId, sess) {
+  if (!thumbId) return;
+  if (_gifSessionsByThumbId.has(thumbId)) {
+    _gifSessionsByThumbId.delete(thumbId);
+  }
+  _gifSessionsByThumbId.set(thumbId, sess);
+  _gifThumbCacheEvict();
+}
+
+function _gifThumbCacheEvict() {
+  if (_gifSessionsByThumbId.size <= GIF_SESSION_LRU_MAX_ENTRIES) return;
+  const overflow = _gifSessionsByThumbId.size - GIF_SESSION_LRU_MAX_ENTRIES;
+  let evicted = 0;
+  for (const [thumbId, sess] of Array.from(_gifSessionsByThumbId)) {
+    if (evicted >= overflow) break;
+    if (sess.canvas == null) {
+      // dormant のみ destroy（active タイルは DOM 上で表示中なので残す）
+      _destroyGifSession(sess.id);
+      evicted++;
+    }
+  }
+  // active のみで上限超過の場合は何もしない（DOM タイル数依存・通常起こらない）
+}
 
 function _getGifWorker() {
   if (_gifWorker) return _gifWorker;
@@ -4634,27 +4674,34 @@ function _onGifWorkerMessage(e) {
     sess.ready = true;
     sess.frameCount = msg.frameCount || 1;
     sess.dims = msg.dims;
-    if (msg.dims) {
+    // v1.41.3：dormant 中（canvas == null）に READY が来た場合、dims のみ記録して REQ_FRAME 送信は skip
+    if (msg.dims && sess.canvas) {
       sess.canvas.width  = msg.dims.width;
       sess.canvas.height = msg.dims.height;
     }
     sess.currentIndex = 0;
-    if (_gifWorker) _gifWorker.postMessage({ type: "REQ_FRAME", id: sess.id, index: 0 });
+    if (sess.canvas && _gifWorker) {
+      _gifWorker.postMessage({ type: "REQ_FRAME", id: sess.id, index: 0 });
+    }
   } else if (msg.type === "FRAME") {
+    // v1.41.3：dormant 中（canvas == null）は drawImage skip ＋ setTimeout 組まない（無駄な再 REQ 抑制）
     if (sess.canvas && msg.bitmap) {
       try {
         sess.ctx.drawImage(msg.bitmap, 0, 0);
       } catch (err) {
         console.warn("[gif-worker] drawImage 失敗", err);
       }
-      try { msg.bitmap.close(); } catch (_) {}
     }
+    if (msg.bitmap?.close) try { msg.bitmap.close(); } catch (_) {}
     const nextIndex = (msg.index + 1) % (sess.frameCount || 1);
     sess.currentIndex = nextIndex;
-    sess.timerId = setTimeout(() => {
-      if (!_gifSessions.has(sess.id)) return;
-      if (_gifWorker) _gifWorker.postMessage({ type: "REQ_FRAME", id: sess.id, index: nextIndex });
-    }, msg.delay || 100);
+    if (sess.canvas) {
+      sess.timerId = setTimeout(() => {
+        if (!_gifSessions.has(sess.id)) return;
+        if (sess.canvas == null) return; // dormant 化されたら停止
+        if (_gifWorker) _gifWorker.postMessage({ type: "REQ_FRAME", id: sess.id, index: nextIndex });
+      }, msg.delay || 100);
+    }
   } else if (msg.type === "ERROR") {
     console.warn("[gif-worker] session error", msg.id, msg.message);
     _destroyGifSession(sess.id);
@@ -4662,6 +4709,29 @@ function _onGifWorkerMessage(e) {
 }
 
 async function _initGifTile(canvas, entry) {
+  // v1.41.3 GROUP-43 Phase 2-pool：thumbId pool check
+  // 既存 session が dormant or active のいずれでも canvas を rebind して再開
+  const cached = _gifThumbCacheGet(entry.thumbId);
+  if (cached) {
+    if (cached.timerId) {
+      try { clearTimeout(cached.timerId); } catch (_) {}
+      cached.timerId = null;
+    }
+    cached.canvas = canvas;
+    cached.ctx = canvas.getContext("2d");
+    cached.entryId = entry.id; // entry id は変わる可能性あり（同じ thumbId を別 entry が参照）
+    canvas.dataset.gifSessionId = String(cached.id);
+    if (cached.dims) {
+      canvas.width  = cached.dims.width;
+      canvas.height = cached.dims.height;
+    }
+    // INIT 中（!ready）なら READY 受信時に自動で REQ_FRAME される（既存ロジック）
+    if (_gifWorker && cached.ready) {
+      _gifWorker.postMessage({ type: "REQ_FRAME", id: cached.id, index: cached.currentIndex });
+    }
+    return cached.id;
+  }
+  // 新規 session
   const id = ++_gifSessionSeq;
   const ctx = canvas.getContext("2d");
   const sess = {
@@ -4669,8 +4739,10 @@ async function _initGifTile(canvas, entry) {
     ready: false, frameCount: 0, dims: null,
     currentIndex: 0, timerId: null,
     entryId: entry.id,
+    thumbId: entry.thumbId, // v1.41.3：pool eviction で同 sess を _gifSessionsByThumbId からも消すため
   };
   _gifSessions.set(id, sess);
+  _gifThumbCachePut(entry.thumbId, sess);
   canvas.dataset.gifSessionId = String(id);
   let binResp;
   try {
@@ -4712,6 +4784,10 @@ function _destroyGifSession(id) {
     sess.timerId = null;
   }
   _gifSessions.delete(id);
+  // v1.41.3：thumbId secondary index からも削除
+  if (sess.thumbId && _gifSessionsByThumbId.get(sess.thumbId) === sess) {
+    _gifSessionsByThumbId.delete(sess.thumbId);
+  }
   if (_gifWorker) {
     try { _gifWorker.postMessage({ type: "DESTROY", id }); } catch (_) {}
   }
@@ -4720,7 +4796,14 @@ function _destroyGifSession(id) {
   }
 }
 
-/** DOM ツリー内のすべての GIF canvas タイルのセッションを破棄（DOM 除去前に呼ぶ） */
+/**
+ * v1.41.3 GROUP-43 Phase 2-pool：DOM ツリー内の GIF canvas タイルを「dormant 化」する
+ * （Worker session は destroy せず保持。同 thumbId 再表示時に _initGifTile cache hit で
+ * canvas を rebind して frame 描画継続。実 destroy は LRU eviction でのみ実行）
+ *
+ * 旧実装（v1.40.0〜v1.41.2）は session 自体を destroy していたため、
+ * 再表示時に必ず Worker INIT（parseGIF + decompressFrames）が走り空白期間が発生していた。
+ */
 function _destroyGifSessionsInTree(rootEl) {
   if (!rootEl) return;
   const canvases = rootEl.matches?.("canvas[data-gif-session-id]")
@@ -4728,7 +4811,16 @@ function _destroyGifSessionsInTree(rootEl) {
     : Array.from(rootEl.querySelectorAll?.("canvas[data-gif-session-id]") || []);
   for (const cv of canvases) {
     const id = parseInt(cv.dataset.gifSessionId, 10);
-    if (id) _destroyGifSession(id);
+    if (!id) continue;
+    const sess = _gifSessions.get(id);
+    if (!sess) continue;
+    if (sess.timerId) {
+      try { clearTimeout(sess.timerId); } catch (_) {}
+      sess.timerId = null;
+    }
+    sess.canvas = null;
+    sess.ctx = null;
+    try { delete cv.dataset.gifSessionId; } catch (_) {}
   }
 }
 

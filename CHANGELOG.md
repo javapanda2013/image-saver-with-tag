@@ -5,6 +5,51 @@
 
 ---
 
+## [1.41.3] - 2026-04-26
+
+### Improved — GIF Worker session pooling で再表示の Worker INIT を skip（GROUP-43 Phase 2-pool）
+
+#### 経緯
+v1.41.2 で frontend dataUrl LRU cache を導入したが、これは非 GIF（`<img src=dataUrl>`）パス専用。GIF タイル（canvas + Worker）は `_initGifTile` 呼出のたびに Worker INIT（`GET_THUMB_BINARY` ＋ parseGIF ＋ decompressFrames）が走り、再表示時の空白期間が解消されなかった。
+
+ユーザー報告：「改善せず、というより img のみ再描画されなくなっており gif は未対策ですか？」
+
+#### 修正内容
+**`src/settings/settings.js` に GIF Worker session pool を導入**：
+
+- `_gifSessionsByThumbId` Map（thumbId → session、LRU 順）を追加
+- session オブジェクトに `thumbId` フィールド付与
+- `_gifThumbCacheGet` / `_gifThumbCachePut` / `_gifThumbCacheEvict`：LRU 上限 30 件、active session は eviction 対象外
+- `_initGifTile` 冒頭で thumbId pool check：
+  - **cache hit** → 既存 session の `canvas` / `ctx` を新 canvas に rebind ＋ `clearTimeout` ＋ ready なら `REQ_FRAME` 送信で frame 描画即時再開（INIT skip、`GET_THUMB_BINARY` も skip）
+  - **cache miss** → 従来通り新規 session 作成 ＋ Worker INIT、pool に登録
+- `_destroyGifSessionsInTree` を **dormant 化** に変更：DOM 除去時に `sess.canvas = null` ＋ `clearTimeout(sess.timerId)` のみ。Worker session は残す（再表示時に再利用）
+- `_onGifWorkerMessage` の READY / FRAME ハンドラに `sess.canvas == null` チェック追加：dormant 中は `drawImage` skip ＋ `setTimeout` 組まない（無駄な再 REQ 抑制）
+- `_destroyGifSession`（実 destroy）：LRU eviction 経路でのみ呼ばれる。`_gifSessionsByThumbId` からも削除
+
+#### 期待される改善
+- 一度 INIT した GIF は dormant 化後も Worker 内 frame バッファ保持
+- 同 thumbId 再表示時：canvas rebind ＋ REQ_FRAME 即時送信で **空白期間ゼロ**
+- 絞り込み変更で page slice 構成が大きく変わり後で戻ってきても、過去 30 件以内なら同期復帰
+- LRU 上限 30 件（dormant 件数）で Worker 内メモリ膨張を抑制
+
+#### Files Changed
+- `manifest.json`：1.41.2 → 1.41.3
+- `src/settings/settings.js`：
+  - `_gifSessionsByThumbId` ＋ `_gifThumbCacheGet` / `_gifThumbCachePut` / `_gifThumbCacheEvict`
+  - `_initGifTile` に thumbId pool check 追加、新規 session に `thumbId` フィールド付与
+  - `_onGifWorkerMessage`：dormant チェック追加（READY / FRAME 両方）
+  - `_destroyGifSessionsInTree`：destroy → dormant 化に変更
+  - `_destroyGifSession`：`_gifSessionsByThumbId` 削除を追加
+
+#### Files Unchanged
+- `gif-decoder.worker.js`：Worker 側のロジック変更なし（INIT 済 session のフレーム保持は既存動作）
+- v1.41.1 reuse helper / v1.41.2 dataUrl LRU cache はそのまま組み合わせ
+- `modal.js`（保存ウィンドウ）は対象外。Phase 3 (M2) で対応
+- `native/image_saver.py`：Native 変更なし（v1.30.7 のまま）
+
+---
+
 ## [1.41.2] - 2026-04-26
 
 ### Improved — settings.js プロセス内に frontend dataUrl LRU cache を導入し、非 GIF タイルの再表示空白を解消（GROUP-43 Phase 2-cache）
