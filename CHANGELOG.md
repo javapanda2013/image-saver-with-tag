@@ -5,6 +5,47 @@
 
 ---
 
+## [1.42.0] - 2026-04-27
+
+### Added — 取り込み予定フォルダリストにステータス絞り込みトグル群を追加（GROUP-20-tlsbl1）
+
+#### 経緯
+GROUP-20 は 2026-04-19 受領、2026-04-25 に Q20-1〜Q20-8 で要件確定。GROUP-45 hznhv シリーズ完了（v1.41.8）後、要件確定済タスクの順次消化として最初に着手。外部取り込みタブの統合テーブルに対し、各行のステータス（未開始 / 進行中 / 完了 / 空）でフィルタ表示できるトグル群を追加し、未着手・進行中の作業にフォーカスする UX を実現する。
+
+#### 修正内容
+
+**`src/settings/settings.html`** — トグル群 UI
+- `ext-fl-sort-bar` 内、ソート select の隣に `ext-fl-status-filter-bar` を追加
+- 4 つのトグルボタン（`未開始 / 進行中 / 完了 / 空`）を `_EXT_STATUS_BADGE_COLOR` の各色（グレー / ブルー / グリーン / オレンジ）で枠取り。OFF 時は枠のみ、ON 時は塗り潰しで状態を視認可能
+
+**`src/settings/settings.js`**
+- 状態変数 `_extFlStatusFilters` 追加（タブ別 dict、構造は既存 `_extFlSortModes` と整合）
+- 初期化時の `storage.local.get` キーリストに `extImportFlStatusFilters` 追加
+- ヘルパー 4 個追加：
+  - `_extFlDefaultStatusFilter()`：タブ未登録時のデフォルト（`{ notstarted: true, inprogress: true, done: false, empty: true }`、Q20-8 の「完了 OFF」要件）
+  - `_extFlGetStatusFilter(tabId)`：該当タブのフィルタ取得（未登録時はデフォルト返却、保存はしない）
+  - `_extFlSyncStatusFilterUI()`：4 トグルボタンの見た目を現在の状態に合わせる（`aria-pressed` も同期）
+  - `_extFlSetupStatusFilterUI()`：各ボタンの click ハンドラ登録（toggle ＋ `storage.local.set` ＋ UI sync ＋ 再描画）
+  - `_extFlPassStatusFilter(targetPath)`：行の表示判定（OR 結合、`_extDetermineStatus` で kind を取得）
+- `_extRenderFolderList` に setup と sync の呼出追加。行生成ループで single 行は通過しない場合 skip、subfolders 行は通過 sub のみ表示し、全 sub が skip ならグループヘッダ自体も出さない
+
+#### 期待される改善
+- 完了済みのフォルダが大量にある外部取り込み運用で、未着手・進行中行だけに絞ってフォーカス可能
+- ステータス badge と同じ色で UI 一貫性を維持
+- タブ別永続化で、用途の異なる単体タブ／ルート別タブで個別の絞り込み設定を保持
+
+#### Files Changed
+- `manifest.json`：1.41.8 → 1.42.0
+- `src/settings/settings.html`：sort-bar 内に status-filter-bar 追加（4 トグルボタン）
+- `src/settings/settings.js`：`_extFlStatusFilters` 状態 + load 経路 + 4 ヘルパー追加、`_extRenderFolderList` でフィルタ適用
+
+#### Files Unchanged
+- 既存ソート（`_extFlSortModes`）／タブ並び順（`_extFlTabOrder`）／テーブル高さ（`_extFlTableHeight`）の永続化は変更なし
+- 行 D&D は元から未実装（Q20-6：該当なし）
+- `native/image_saver.py`：Native 変更なし（v1.30.7 のまま）
+
+---
+
 ## [1.41.8] - 2026-04-27
 
 ### Improved — R-A: Native ⑨ Pillow サムネスキップ＋ R-B: modal → background Blob 直送（GROUP-45 hznhv3 残 2 件）

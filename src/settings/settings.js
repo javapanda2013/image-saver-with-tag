@@ -89,6 +89,10 @@ let _extFlSortModes = {};
 let _extFlTabOrder = [];
 // テーブル領域の高さ（px、ユーザーリサイズ後の値を永続化）
 let _extFlTableHeight = null;
+// ---- v1.42.0 GROUP-20-tlsbl1: ステータス絞り込み（タブ別、複数選択 OR）----
+// { [tabId]: { notstarted: bool, inprogress: bool, done: bool, empty: bool } }
+// タブ未登録時のデフォルトは _extFlDefaultStatusFilter で「完了」OFF・他 ON
+let _extFlStatusFilters = {};
 // サブフォルダピッカー用: ドラッグ操作の状態
 let _extPickerDrag     = null;
 //   { mode: "unify"|"invert", target: bool, lastIdx: number, processed: Set<number>, anchorIdx: number }
@@ -6668,6 +6672,8 @@ async function _setupExtPerItemMode() {
     "extImportFlActiveTab",
     // v1.28.0 GROUP-19 Phase B/C: ソート・タブ順序・テーブル高さ
     "extImportFlSortModes", "extImportFlTabOrder", "extImportFlTableHeight",
+    // v1.42.0 GROUP-20-tlsbl1: ステータス絞り込み（タブ別）
+    "extImportFlStatusFilters",
   ]);
   _extMode           = stored.extImportMode       || "batch";
   _extSessions       = stored.extImportSessions   || [];
@@ -6677,6 +6683,7 @@ async function _setupExtPerItemMode() {
   _extFlSortModes    = stored.extImportFlSortModes || {};
   _extFlTabOrder     = stored.extImportFlTabOrder || [];
   _extFlTableHeight  = stored.extImportFlTableHeight || null;
+  _extFlStatusFilters = stored.extImportFlStatusFilters || {}; // v1.42.0 GROUP-20-tlsbl1
   // v1.23.0
   _extCarryover = Object.assign(
     { tags: false, subtags: false, authors: false, savepath: false },
@@ -7790,6 +7797,59 @@ function _extFlSetupSortUI() {
   });
 }
 
+// ---- v1.42.0 GROUP-20-tlsbl1: ステータス絞り込み helpers ----
+/** タブ未登録時のデフォルト：未開始・進行中・空 ON、完了 OFF */
+function _extFlDefaultStatusFilter() {
+  return { notstarted: true, inprogress: true, done: false, empty: true };
+}
+/** 該当タブの絞り込み状態を取得（未登録ならデフォルト返却、保存はしない） */
+function _extFlGetStatusFilter(tabId) {
+  return Object.assign(_extFlDefaultStatusFilter(), _extFlStatusFilters[tabId] || {});
+}
+/** トグルボタンの見た目を現在の状態に合わせる（active = 着色塗り、inactive = 枠のみ） */
+function _extFlSyncStatusFilterUI() {
+  const filter = _extFlGetStatusFilter(_extFlActiveTab);
+  const colors = _EXT_STATUS_BADGE_COLOR;
+  document.querySelectorAll(".ext-fl-status-btn").forEach((btn) => {
+    const k = btn.dataset.status;
+    const on = !!filter[k];
+    const color = colors[k] || "#888";
+    if (on) {
+      btn.style.background = color;
+      btn.style.color = "#fff";
+      btn.setAttribute("aria-pressed", "true");
+    } else {
+      btn.style.background = "#fff";
+      btn.style.color = color;
+      btn.setAttribute("aria-pressed", "false");
+    }
+  });
+}
+/** 4 トグルボタンの click ハンドラ登録（外部取込タブ初期化時に呼ぶ） */
+function _extFlSetupStatusFilterUI() {
+  const buttons = document.querySelectorAll(".ext-fl-status-btn");
+  buttons.forEach((btn) => {
+    if (btn.dataset.bound) return;
+    btn.dataset.bound = "1";
+    btn.addEventListener("click", () => {
+      const kind = btn.dataset.status;
+      if (!kind) return;
+      const cur = _extFlGetStatusFilter(_extFlActiveTab);
+      cur[kind] = !cur[kind];
+      _extFlStatusFilters = { ..._extFlStatusFilters, [_extFlActiveTab]: cur };
+      browser.storage.local.set({ extImportFlStatusFilters: _extFlStatusFilters }).catch(() => {});
+      _extFlSyncStatusFilterUI();
+      _extRenderFolderList();
+    });
+  });
+}
+/** 行ステータスを判定し、現在のタブの絞り込み状態を満たすか返す */
+function _extFlPassStatusFilter(targetPath) {
+  const filter = _extFlGetStatusFilter(_extFlActiveTab);
+  const kind = _extDetermineStatus(targetPath).kind;
+  return !!filter[kind];
+}
+
 /** v1.28.0 Phase C: テーブル高さリサイズ永続化のセットアップ */
 function _extFlSetupTableResize() {
   const cont = document.getElementById("ext-fl-table-container");
@@ -7831,6 +7891,9 @@ async function _extRenderFolderList() {
   _extFlSetupSortUI();
   _extFlSetupTableResize();
   _extFlSyncSortSelect();
+  // v1.42.0 GROUP-20-tlsbl1: ステータス絞り込み UI の初期化＋現在タブの状態反映
+  _extFlSetupStatusFilterUI();
+  _extFlSyncStatusFilterUI();
   const rawFiltered = _extFlFilterByTab(_extFlActiveTab);
   // v1.28.0 Phase B: アクティブタブのソートモードを適用
   const sortMode = _extFlSortModes[_extFlActiveTab] || "insertion";
@@ -7918,10 +7981,17 @@ async function _extRenderFolderList() {
   };
 
   // v1.27.0: filtered（タブ適用後）を回す
+  // v1.42.0 GROUP-20-tlsbl1: ステータス絞り込み適用
+  // - single：行ステータスがフィルタ通過なら表示、そうでなければ skip
+  // - subfolders：通過する sub のみ表示。全 sub が skip ならグループヘッダ自体も出さない
   for (const item of filtered) {
     if (item.mode === "single") {
+      if (!_extFlPassStatusFilter(item.rootPath)) continue;
       tbody.appendChild(buildRow(item, item.rootPath, null));
     } else if (item.mode === "subfolders") {
+      const visibleSubs = (item.subfolders || []).filter((s) => _extFlPassStatusFilter(s.path));
+      if (visibleSubs.length === 0) continue;
+
       // グループヘッダ（6 列 colspan）
       const trH = document.createElement("tr");
       trH.style.background = "#f9fbfd";
@@ -7952,7 +8022,7 @@ async function _extRenderFolderList() {
       trH.appendChild(tdH);
       tbody.appendChild(trH);
 
-      for (const sub of (item.subfolders || [])) {
+      for (const sub of visibleSubs) {
         tbody.appendChild(buildRow(item, sub.path, sub.path, { indent: true }));
       }
     }

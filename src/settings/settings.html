@@ -1295,8 +1295,8 @@
         </div>
         <!-- v1.27.0 GROUP-19 Phase A: タブバー（単体 / ルート別）-->
         <div id="ext-fl-tabbar" style="display:flex;gap:2px;margin-bottom:0;flex-wrap:wrap;border-bottom:1px solid #c0cee0;"></div>
-        <!-- v1.28.0 GROUP-19 Phase B: ソートバー（中央配置）-->
-        <div id="ext-fl-sort-bar" style="display:flex;justify-content:center;align-items:center;gap:6px;padding:4px 8px;background:#fafcff;border-bottom:1px solid #e3eaf2;font-size:11px;color:#555;">
+        <!-- v1.28.0 GROUP-19 Phase B: ソートバー（中央配置） / v1.42.0 GROUP-20: ステータス絞り込みトグル群 -->
+        <div id="ext-fl-sort-bar" style="display:flex;justify-content:center;align-items:center;gap:14px;padding:4px 8px;background:#fafcff;border-bottom:1px solid #e3eaf2;font-size:11px;color:#555;flex-wrap:wrap;">
           <label style="display:inline-flex;align-items:center;gap:4px;">
             ソート：
             <select id="ext-fl-sort-select" style="font-size:11px;padding:2px 6px;border:1px solid #d0d0d0;border-radius:4px;background:#fff;font-family:inherit;cursor:pointer;">
@@ -1308,6 +1308,14 @@
               <option value="thumbsize">サムネ容量</option>
             </select>
           </label>
+          <!-- v1.42.0 GROUP-20-tlsbl1: ステータス絞り込み（複数選択 OR、タブ別永続化、初期値「完了」OFF） -->
+          <div id="ext-fl-status-filter-bar" style="display:inline-flex;align-items:center;gap:4px;">
+            <span style="color:#666;">表示:</span>
+            <button class="ext-fl-status-btn" data-status="notstarted" type="button" style="font-size:10px;padding:2px 8px;border:1px solid #95a5a6;border-radius:10px;background:#fff;color:#95a5a6;font-family:inherit;cursor:pointer;font-weight:600;">未開始</button>
+            <button class="ext-fl-status-btn" data-status="inprogress" type="button" style="font-size:10px;padding:2px 8px;border:1px solid #3498db;border-radius:10px;background:#fff;color:#3498db;font-family:inherit;cursor:pointer;font-weight:600;">進行中</button>
+            <button class="ext-fl-status-btn" data-status="done" type="button" style="font-size:10px;padding:2px 8px;border:1px solid #2ecc71;border-radius:10px;background:#fff;color:#2ecc71;font-family:inherit;cursor:pointer;font-weight:600;">完了</button>
+            <button class="ext-fl-status-btn" data-status="empty" type="button" style="font-size:10px;padding:2px 8px;border:1px solid #e67e22;border-radius:10px;background:#fff;color:#e67e22;font-family:inherit;cursor:pointer;font-weight:600;">空</button>
+          </div>
         </div>
         <!-- v1.28.0 GROUP-19 Phase C: リサイズ可能なテーブルコンテナ -->
         <div id="ext-fl-table-container" style="resize:vertical;overflow:auto;min-height:150px;max-height:80vh;border:1px solid #e0e0e0;border-radius:0 0 4px 4px;">
