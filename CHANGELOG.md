@@ -5,6 +5,57 @@
 
 ---
 
+## [1.41.7] - 2026-04-27
+
+### Improved — 保存経路の `storage.local.set` を 1 回に集約＋ modal の LIST_DIR 早期チェック廃止（GROUP-45 hznhv3 C-β + C-γ + R-C）
+
+#### 経緯
+GROUP-45 hznhv3 冗長性監査で確定した改善案 6 件のうち、追加調査（listener grep / R-C UX 確認）が完了した 3 件を v1.41.7 として実装：
+- **C-β**：保存経路の複数 `storage.local.set` を 1 回に集約（broadcast 5+ 回 → 1 回）
+- **C-γ**：authors ループ内の `updateGlobalAuthor` / `updateRecentAuthors` の N 回 set を集約に取り込み
+- **R-C**：modal の `LIST_DIR` 早期チェックを廃止し、Native の応答エラーで失敗ポップアップ表示
+
+#### listener grep 結果（C-β 採用判定の必要条件）
+全リポジトリ走査で `storage.onChanged` listener は 3 箇所のみ（`content.js:40` / `content.js:53` / `background.js:90`）。すべて `if ("X" in changes)` の単純パターンで、保存経路対象キーとは無関係、順序前提・キー単独到着前提なし。**集約 set でも同等動作**を確認、安全採用。
+
+#### 修正内容
+
+**`src/background/background.js`**
+- `addSaveHistory` の前に純関数 merge ヘルパーを 6 個追加：`_mergeGlobalTags` / `_mergeRecentTags` / `_mergeRecentSubTags` / `_mergeTagDestinations` / `_mergeGlobalAuthors` / `_mergeRecentAuthors`。既存 `update*` 関数の値計算ロジックを抽出した純粋関数で、storage.local.get / set を行わない
+- `addSaveHistoryMulti` を `_extraStorage` 引数受取形に拡張：
+  - `authors` ループ内の `updateGlobalAuthor` / `updateRecentAuthors` の N 回呼出を `_mergeGlobalAuthors` / `_mergeRecentAuthors` の値計算に置換
+  - 末尾の `storage.local.set({ saveHistory })` を `set({ ..._extraStorage, saveHistory, globalAuthors, recentAuthors })` に変更
+- `handleSave`：`lastSaveDir` / `globalTags` / `recentTags` / `tagDestinations` の個別 set（4 箇所）を全廃止し、`_extraStorage` に値計算結果を積んで `addSaveHistory` 呼出に渡す
+- `handleSaveMulti`：ループ内の `lastSaveDir` / `globalTags` / `tagDestinations` 個別 set（ループ毎）と、ループ後の `recentTags` set を全廃止。ループ後に成功 savePath 群に対して `_mergeTagDestinations` を連鎖適用、`_extraStorage` を `addSaveHistoryMulti` に渡す
+- `handleInstantSave`：`lastSaveDir` / `globalTags` / `recentTags` / `recentSubTags` / `recentAuthors` ループ / `continuousSession` の個別 set（5+ 箇所）を全廃止、`_extraStorage` に集約
+
+**`src/modal/modal.js`** — R-C
+- 通常保存ハンドラの `LIST_DIR` 早期チェック（`btn-save` クリック時の保存先確認）を廃止
+- フォルダ不在は Native `handle_save_image` 内の `if not os.path.isdir(save_dir)` で検出され `errorCode: "DIR_NOT_FOUND"` ＋ `error: "保存先フォルダが存在しません: ..."` で失敗を返す → SAVE_RESULT 経由で `showSaveFailurePopup` がエラー詳細表示
+- modal の早期エラートーストを失う代わりに、sendNative 往復 1 回削減
+
+#### 期待される改善
+| 経路 | 旧 broadcast 回数 | 新 broadcast 回数 |
+|---|---|---|
+| handleSave（通常保存） | 5+ 回（lastSaveDir / globalTags / recentTags / tagDestinations + authors N 回 + saveHistory） | **1 回** |
+| handleSaveMulti（一括保存、N 候補） | 3N + 1 + N + saveHistory（数十回） | **1 回** |
+| handleInstantSave（即保存） | 5+ 回 + authors N 回 + saveHistory | **1 回** |
+
+GROUP-35 Profiler 計測の `StructuredCloneHolder.deserialize 552MB`（保存毎）が 1 回に集約。saveHistory 件数が多いユーザーほど効果絶大。
+
+#### Files Changed
+- `manifest.json`：1.41.6 → 1.41.7
+- `src/background/background.js`：merge ヘルパー 6 個追加／addSaveHistory(Multi) 集約 set 化／handleSave / handleSaveMulti / handleInstantSave の個別 set 全廃止
+- `src/modal/modal.js`：通常保存の LIST_DIR ブロック削除
+
+#### Files Unchanged
+- 既存の `updateGlobalTagSet` / `updateRecentTags` / `recordTagDestination` / `updateGlobalAuthor` / `updateRecentAuthors` / `updateRecentSubTags` 関数は外部メッセージハンドラ（370 / 388 行）から呼ばれるため残存（保存経路では使わない）
+- 一括保存（btn-multi-save）には元々 LIST_DIR 早期チェック無し、R-C 影響なし
+- `storage.onChanged` listener 3 箇所はキー単独検査の単純パターン、集約 set でも動作同等
+- `native/image_saver.py`：Native 変更なし（v1.30.7 のまま）
+
+---
+
 ## [1.41.6] - 2026-04-27
 
 ### Improved — 保存処理の冗長除去：B-1 使用量ログ削除＋ C-α tagRecords 廃止（GROUP-45 hznhv3 承認済 2 件）

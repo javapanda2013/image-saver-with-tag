@@ -882,7 +882,7 @@ async function handleSave(payload) {
       addLog("INFO", `Native が自動リネーム: ${effectiveFilename} → ${actualSavedFilename}`);
     }
     addLog("INFO", `保存成功: ${actualSavedPath}`);
-    await browser.storage.local.set({ lastSaveDir: savePath });
+    // v1.41.7 hznhv3 C-β：lastSaveDir set は addSaveHistory の最終集約 set にマージ（個別 set 廃止）
 
     // v1.31.4 GROUP-28 mvdl：関連音声ファイルを同フォルダに書き出す
     // v1.31.10：GIF が Native 側でリネームされた場合、音声側も同じベース名に合わせる
@@ -912,15 +912,19 @@ async function handleSave(payload) {
       }
     }
 
+    // v1.41.7 hznhv3 C-β：globalTags / recentTags / tagDestinations の個別 set を廃止し、
+    // 値計算結果を _extraStorage にまとめて addSaveHistory の最終 set にマージ。
+    // 1 保存あたりの broadcast 発火が 4+ 回 → 1 回（GROUP-35-perf-A の正面対策）。
+    const _tagStored = await browser.storage.local.get(["globalTags", "recentTags", "tagDestinations"]);
+    const _extra = { lastSaveDir: savePath };
     if (allTags.length > 0) {
-      // v1.41.6 hznhv3 C-α：saveTagRecord 廃止、updateGlobalTagSet を直接呼び出す
-      await updateGlobalTagSet(allTags);
+      _extra.globalTags = _mergeGlobalTags(_tagStored.globalTags, allTags);
     }
     if (tags && tags.length > 0) {
-      await updateRecentTags(tags); // recentTagsはメインタグのみ
+      _extra.recentTags = _mergeRecentTags(_tagStored.recentTags, tags, 100);
     }
     if (tags && tags.length > 0 && !skipTagRecord) {
-      await recordTagDestination(tags, savePath); // 保存先関連付けはサブタグ除く
+      _extra.tagDestinations = _mergeTagDestinations(_tagStored.tagDestinations, tags, savePath);
     }
 
     // サムネイル優先度:
@@ -949,6 +953,7 @@ async function handleSave(payload) {
       audioFilename: actualAudioFilename,
       audioMimeType:    (associatedAudio && associatedAudio.mimeType) || null,
       audioDurationSec: (associatedAudio && associatedAudio.durationSec) || null,
+      _extraStorage: _extra,
     });
 
     return { success: true };
@@ -1271,14 +1276,20 @@ async function handleInstantSave(imageUrl, pageUrl) {
     }
     if (!res.ok) return { success: false, error: res.error };
 
-    await browser.storage.local.set({ lastSaveDir: savePath });
+    // v1.41.7 hznhv3 C-β：lastSaveDir / globalTags / recentTags / recentSubTags / continuousSession の
+    // 個別 set を廃止し、_extraStorage にまとめて addSaveHistory の最終 set にマージ。
+    const _tagStored = await browser.storage.local.get(["globalTags", "recentTags", "recentSubTags"]);
+    const _extra = { lastSaveDir: savePath };
     if (allTags.length > 0) {
-      // v1.41.6 hznhv3 C-α：saveTagRecord 廃止、updateGlobalTagSet を直接呼び出す
-      await updateGlobalTagSet(allTags);
-      if (tags.length > 0) await updateRecentTags(tags);
-      if (subTags.length > 0) await updateRecentSubTags(subTags);
+      _extra.globalTags = _mergeGlobalTags(_tagStored.globalTags, allTags);
+      if (tags.length > 0) _extra.recentTags = _mergeRecentTags(_tagStored.recentTags, tags, 100);
+      if (subTags.length > 0) _extra.recentSubTags = _mergeRecentSubTags(_tagStored.recentSubTags, subTags, 20);
     }
-    for (const a of authors) await updateRecentAuthors(a);
+    // セッション更新も同 set にマージ（即保存中の連続保存セッション継続）
+    if (session) {
+      session.count = (session.count || 0) + 1;
+      _extra.continuousSession = session;
+    }
 
     // Python側が返すサムネイルデータを使用（通常保存と同じ処理）
     if (res.thumbError) {
@@ -1290,18 +1301,14 @@ async function handleInstantSave(imageUrl, pageUrl) {
     const thumbWidth   = pyThumb?.width   || null;
     const thumbHeight  = pyThumb?.height  || null;
 
-    // 履歴に追加
+    // 履歴に追加（authors も addSaveHistory 内で merge＋集約 set）
     await addSaveHistory({
       imageUrl, filename: effectiveFilenameInstant, savePath, tags: allTags, authors, pageUrl,
       thumbDataUrl, thumbWidth, thumbHeight,
       sessionId: session?.id || null,
-      sessionIndex: session ? (session.count + 1) : null,
+      sessionIndex: session ? session.count : null,
+      _extraStorage: _extra,
     });
-    // セッション更新
-    if (session) {
-      session.count = (session.count || 0) + 1;
-      await browser.storage.local.set({ continuousSession: session });
-    }
 
     addLog("INFO", `即保存: ${fullPath}`);
     return { success: true };
@@ -2392,14 +2399,8 @@ async function handleSaveMulti(payload) {
       if (!firstActualSavedFilename) firstActualSavedFilename = actualSavedFilename;
 
       addLog("INFO", `一括保存成功: ${actualSavedPath}`);
-      await browser.storage.local.set({ lastSaveDir: savePath });
-      if (allTags.length > 0) {
-        // v1.41.6 hznhv3 C-α：saveTagRecord 廃止、updateGlobalTagSet を直接呼び出す
-        await updateGlobalTagSet(allTags);
-      }
-      if (tags && tags.length > 0 && !skipTagRecord) {
-        await recordTagDestination(tags, savePath);
-      }
+      // v1.41.7 hznhv3 C-β：lastSaveDir / globalTags / tagDestinations の個別 set を廃止し、
+      // ループ後の addSaveHistoryMulti の最終集約 set にマージ。
       // v1.22.10: ループ初回ぶんだけ Python サムネを採用する既存方針を維持。
       //           GIF も thumbChunkPath 経由で取り込めるよう共通ヘルパーへ差し替え。
       if (!pyThumbData) {
@@ -2444,14 +2445,31 @@ async function handleSaveMulti(payload) {
     }
   }
 
-  if (tags && tags.length > 0) await updateRecentTags(tags); // recentTagsはメインタグのみ
-
   const successPaths = results.filter(r => r.ok).map(r => r.savePath);
   if (successPaths.length > 0) {
     const effectiveThumbDataUrl = thumbDataUrl
       || (pyThumbData ? pyThumbData.dataUrl : null);
     const effectiveThumbW = thumbDataUrl ? thumbWidth  : (pyThumbData?.w  || null);
     const effectiveThumbH = thumbDataUrl ? thumbHeight : (pyThumbData?.h || null);
+
+    // v1.41.7 hznhv3 C-β：lastSaveDir / globalTags / recentTags / tagDestinations を集約して 1 回 set
+    const _tagStored = await browser.storage.local.get(["globalTags", "recentTags", "tagDestinations"]);
+    const _extra = { lastSaveDir: successPaths[successPaths.length - 1] };
+    if (allTags.length > 0) {
+      _extra.globalTags = _mergeGlobalTags(_tagStored.globalTags, allTags);
+    }
+    if (tags && tags.length > 0) {
+      _extra.recentTags = _mergeRecentTags(_tagStored.recentTags, tags, 100);
+    }
+    if (tags && tags.length > 0 && !skipTagRecord) {
+      // 各成功 savePath に対して順に merge（pure 関数なので連鎖適用で OK）
+      let mergedDest = _tagStored.tagDestinations;
+      for (const sp of successPaths) {
+        mergedDest = _mergeTagDestinations(mergedDest, tags, sp);
+      }
+      _extra.tagDestinations = mergedDest;
+    }
+
     await addSaveHistoryMulti({
       imageUrl,
       // v1.31.10：Native 側 unique_path による自動リネーム後の実ファイル名を記録
@@ -2466,6 +2484,7 @@ async function handleSaveMulti(payload) {
       audioFilename:    firstActualAudioFilename,
       audioMimeType:    (associatedAudio && associatedAudio.mimeType) || null,
       audioDurationSec: (associatedAudio && associatedAudio.durationSec) || null,
+      _extraStorage: _extra,
     });
   }
 
@@ -2537,14 +2556,74 @@ async function getStorageSize() {
   return { storageSizeStr, idbSizeStr };
 }
 
+// ============================================================================
+// v1.41.7 GROUP-45 hznhv3 C-β + C-γ：保存経路の storage.local.set を 1 回に集約
+// ============================================================================
+// 既存の updateGlobalTagSet / updateRecentTags / recordTagDestination / updateGlobalAuthor /
+// updateRecentAuthors / updateRecentSubTags は外部メッセージハンドラ（370 / 388 行）
+// から呼ばれるため残すが、保存経路（handleSave / handleSaveMulti / handleInstantSave）では
+// 値計算のみを以下の純関数で行い、addSaveHistoryMulti の最終 set に合流させる。
+// これにより 1 保存あたりの broadcast を 5+ 回 → 1 回に削減。
+// ============================================================================
+function _mergeGlobalTags(currentTags, newTags) {
+  const set = new Set(currentTags || []);
+  for (const t of (newTags || [])) set.add(t);
+  return [...set];
+}
+function _mergeRecentTags(currentRecent, newTags, max = 100) {
+  const cur = currentRecent || [];
+  const news = newTags || [];
+  return [...news, ...cur.filter((t) => !news.includes(t))].slice(0, max);
+}
+function _mergeRecentSubTags(currentRecent, newSubTags, max = 20) {
+  const cur = currentRecent || [];
+  const news = newSubTags || [];
+  return [...new Set([...news, ...cur])].slice(0, max);
+}
+function _mergeTagDestinations(currentDest, tags, savePath) {
+  // 元 recordTagDestination と同じロジック（structuredClone で current を破壊しない）
+  const dest = currentDest ? JSON.parse(JSON.stringify(currentDest)) : {};
+  const normalizedSavePath = normalizePath(savePath);
+  for (const tag of (tags || [])) {
+    if (!dest[tag]) dest[tag] = [];
+    const alreadyExists = dest[tag].some((d) => normalizePath(d.path) === normalizedSavePath);
+    if (!alreadyExists) {
+      dest[tag].push({
+        id:    crypto.randomUUID(),
+        path:  savePath,
+        label: "",
+      });
+    }
+  }
+  return dest;
+}
+function _mergeGlobalAuthors(currentAuthors, authors) {
+  const list = [...(currentAuthors || [])];
+  for (const a of (authors || [])) {
+    if (a && !list.includes(a)) list.push(a);
+  }
+  return list;
+}
+function _mergeRecentAuthors(currentRecent, authors, max = 10) {
+  // 元 updateRecentAuthors は 1 author ずつ unshift。複数 author を順に処理して同等結果へ。
+  let list = [...(currentRecent || [])];
+  for (const a of (authors || [])) {
+    if (!a) continue;
+    list = list.filter((x) => x !== a);
+    list.unshift(a);
+  }
+  return list.slice(0, max);
+}
+
 /** 単一保存先の履歴登録 */
-async function addSaveHistory({ imageUrl, filename, savePath, tags, authors, pageUrl, thumbDataUrl, thumbWidth, thumbHeight, sessionId, sessionIndex, audioFilename, audioMimeType, audioDurationSec }) {
-  await addSaveHistoryMulti({ imageUrl, filename, savePaths: [savePath], tags, authors, pageUrl, thumbDataUrl, thumbWidth, thumbHeight, sessionId, sessionIndex, audioFilename, audioMimeType, audioDurationSec });
+async function addSaveHistory({ imageUrl, filename, savePath, tags, authors, pageUrl, thumbDataUrl, thumbWidth, thumbHeight, sessionId, sessionIndex, audioFilename, audioMimeType, audioDurationSec, _extraStorage }) {
+  await addSaveHistoryMulti({ imageUrl, filename, savePaths: [savePath], tags, authors, pageUrl, thumbDataUrl, thumbWidth, thumbHeight, sessionId, sessionIndex, audioFilename, audioMimeType, audioDurationSec, _extraStorage });
 }
 
 /** 複数保存先対応の履歴登録 */
-async function addSaveHistoryMulti({ imageUrl, filename, savePaths, tags, authors, pageUrl, thumbDataUrl, thumbWidth, thumbHeight, sessionId, sessionIndex, audioFilename, audioMimeType, audioDurationSec }) {
-  const stored  = await browser.storage.local.get("saveHistory");
+async function addSaveHistoryMulti({ imageUrl, filename, savePaths, tags, authors, pageUrl, thumbDataUrl, thumbWidth, thumbHeight, sessionId, sessionIndex, audioFilename, audioMimeType, audioDurationSec, _extraStorage }) {
+  // v1.41.7 hznhv3 C-β + C-γ：authors 系も含めて 1 回の set に集約
+  const stored  = await browser.storage.local.get(["saveHistory", "globalAuthors", "recentAuthors"]);
   const history = stored.saveHistory || [];
 
   // サムネイル：thumbDataUrl が渡された場合は直接 IDB へ保存
@@ -2635,15 +2714,23 @@ async function addSaveHistoryMulti({ imageUrl, filename, savePaths, tags, author
     audioDurationSec: audioDurationSec || null,
   });
 
-  for (const a of (Array.isArray(authors) ? authors.filter(Boolean) : [])) {
-    await updateGlobalAuthor(a);
-    await updateRecentAuthors(a);
-  }
+  // v1.41.7 hznhv3 C-γ：authors ループ内の updateGlobalAuthor / updateRecentAuthors の N 回 set を
+  // 値計算（純関数）に置換し、最終 set に集約。N 回 → 0 回（saveHistory set と一緒に 1 回）。
+  const newAuthors = Array.isArray(authors) ? authors.filter(Boolean) : [];
+  const mergedGlobalAuthors = _mergeGlobalAuthors(stored.globalAuthors, newAuthors);
+  const mergedRecentAuthors = _mergeRecentAuthors(stored.recentAuthors, newAuthors, 10);
 
-  await browser.storage.local.set({ saveHistory: history });
-  // v1.41.6 GROUP-45 hznhv3 B-1：保存毎の `storage.local.get(null) + JSON.stringify` 使用量ログを削除。
-  // 容量表示は GET_STORAGE_SIZE → getStorageSize（_roughJsonSize 軽量版）で settings.js が必要時に取得する経路があるため、
-  // デバッグ用 addLog は冗長。削除で broadcast 1 回減＋ getStorageSize 経路は維持（getStorageSize 経由で容量表示は引き続き可能）。
+  // v1.41.7 hznhv3 C-β：呼出元（handleSave / handleSaveMulti / handleInstantSave）が
+  // 渡す _extraStorage（lastSaveDir / globalTags / recentTags / recentSubTags / tagDestinations 等）と
+  // saveHistory / globalAuthors / recentAuthors を 1 回の set にマージ。
+  // 旧：保存毎 5+ 回の broadcast → 新：1 回（StructuredCloneHolder.deserialize 552MB × N → × 1）。
+  await browser.storage.local.set({
+    ...(_extraStorage || {}),
+    saveHistory:   history,
+    globalAuthors: mergedGlobalAuthors,
+    recentAuthors: mergedRecentAuthors,
+  });
+  // v1.41.6 GROUP-45 hznhv3 B-1：保存毎の `storage.local.get(null) + JSON.stringify` 使用量ログ削除済。
 }
 
 // ----------------------------------------------------------------

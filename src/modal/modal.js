@@ -5094,23 +5094,11 @@ function setupModalEvents(
 
     const btn = document.getElementById("btn-save");
     btn.disabled = true;
-    btn.textContent = "確認中…";
-
-    // ---- 保存先フォルダの存在チェック ----
-    const checkRes = await browser.runtime.sendMessage({ type: "LIST_DIR", path: savePath });
-    if (!checkRes || !checkRes.ok) {
-      // フォルダが存在しない or アクセス不可
-      showToast(shadow,
-        `⚠️ 保存先フォルダが見つかりません:\n${savePath}`,
-        true
-      );
-      btn.disabled = false;
-      btn.textContent = "保存";
-      return;
-    }
-
     btn.textContent = "⏳ 保存中…";
     btn.title = "前回の保存処理が実行中です";
+    // v1.41.7 hznhv3 R-C：modal の LIST_DIR 早期チェックを廃止。Native の handle_save_image 内で
+    // フォルダ不在を errorCode "DIR_NOT_FOUND" で検出し、SAVE_RESULT 失敗で modal 復元＋失敗ポップアップに表示。
+    // sendNative 往復 1 回削減＋ UX は modal 復元時にエラー詳細「保存先フォルダが存在しません: ...」が出る。
 
     // ページコンテキストでサムネイル取得（pixiv 等のクッキー認証に対応）
     const thumb = await fetchThumbnailInPage(imageUrl);
