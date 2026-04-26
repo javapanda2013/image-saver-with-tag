@@ -418,6 +418,9 @@ async function handleAsyncMessage(message, sender) {
       return fetchPreviewViaNative(message.url);
     case "GET_THUMB_DATA_URL":
       return getThumbDataUrl(message.thumbId || message.id);
+    // v1.40 案 Y Phase 1：GIF 等を Worker に直接渡すための ArrayBuffer 経路（btoa 不要）
+    case "GET_THUMB_BINARY":
+      return getThumbBinary(message.thumbId || message.id);
     case "DELETE_THUMB":
       await deleteThumbFromIDB(message.thumbId);
       return { ok: true };
@@ -1921,6 +1924,40 @@ async function importIdbThumbs(thumbs) {
 async function getThumbDataUrl(thumbId) {
   const dataUrl = await getThumbFromIDB(thumbId);
   return { dataUrl };
+}
+
+/**
+ * 案 Y Phase 1：thumbId → ArrayBuffer ＋ MIME type を返す。
+ * Worker に GIF binary を直接渡せるよう btoa を経由せず IDB Blob → ArrayBuffer。
+ * sendMessage は transferable に対応しないため、戻り値は { ok, buffer, mime, byteLength }
+ * を ArrayBuffer ごと postMessage の clone で返す（dataUrl 経由より小さい）。
+ */
+async function getThumbBinary(thumbId) {
+  if (!thumbId) return { ok: false, error: "thumbId が空です" };
+  try {
+    const db = await openThumbDB();
+    const result = await new Promise((resolve, reject) => {
+      const tx    = db.transaction(IDB_STORE, "readonly");
+      const store = tx.objectStore(IDB_STORE);
+      const req   = store.get(thumbId);
+      req.onsuccess = (e) => resolve(e.target.result);
+      req.onerror   = (e) => reject(e.target.error);
+    });
+    if (!result || !result.blob) {
+      return { ok: false, error: "IDB に該当 thumbId なし" };
+    }
+    // ArrayBuffer 取得（Blob 内部のメモリを参照）
+    const buffer = await result.blob.arrayBuffer();
+    return {
+      ok: true,
+      buffer,                     // ArrayBuffer（sendMessage で structured clone される）
+      mime: result.blob.type || "image/jpeg",
+      byteLength: buffer.byteLength,
+    };
+  } catch (err) {
+    addLog("WARN", "IDB サムネバイナリ取得失敗", err.message);
+    return { ok: false, error: err.message };
+  }
 }
 
 async function deleteThumbFromIDB(thumbId) {

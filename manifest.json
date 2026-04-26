@@ -19,7 +19,14 @@
     "src/viewer/viewer.js",
     "src/video-convert/video_convert.html",
     "src/video-convert/video_convert.js",
-    "src/vendor/gifshot.min.js"
+    "src/vendor/gifshot.min.js",
+    "src/vendor/gifuct/index.js",
+    "src/vendor/gifuct/deinterlace.js",
+    "src/vendor/gifuct/lzw.js",
+    "src/vendor/gifuct/jsBinarySchemaParser/index.js",
+    "src/vendor/gifuct/jsBinarySchemaParser/parsers/uint8.js",
+    "src/vendor/gifuct/jsBinarySchemaParser/schemas/gif.js",
+    "src/decoders/gif-decoder.worker.js"
   ],
   "background": {
     "scripts": [
