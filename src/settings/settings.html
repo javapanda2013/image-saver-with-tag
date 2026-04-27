@@ -320,6 +320,9 @@
     /* v1.28.0 GROUP-19 Phase C: ルート別タブの D&D 並び替え用 */
     .ext-fl-tab[draggable="true"] { cursor: grab; }
     .ext-fl-tab[draggable="true"]:active { cursor: grabbing; }
+    /* v1.43.0 GROUP-19 Phase D: 完了履歴タブの D&D 並び替え用（同パターン） */
+    .ext-completed-tab[draggable="true"] { cursor: grab; }
+    .ext-completed-tab[draggable="true"]:active { cursor: grabbing; }
     .ext-fl-tab.dragging { opacity: 0.5; }
     .ext-fl-tab.drag-over { border-left: 3px solid #4a90e2; }
     .import-result {
@@ -1514,21 +1517,39 @@
         <div id="ext-sessions-empty"></div>
       </div>
 
-      <!-- C. 完了ルートフォルダ履歴（折りたたみ） -->
+      <!-- C. 完了ルートフォルダ履歴（v1.43.0 GROUP-19 Phase D：折りたたみ廃止 → タブ式独立エリア） -->
       <div>
-        <div class="section-title" style="cursor:pointer;" id="ext-completed-toggle">
-          ▸ 完了ルートフォルダ履歴 <span id="ext-completed-count" style="font-size:11px;color:#888;font-weight:400;"></span>
+        <div class="section-title">
+          📁 完了ルートフォルダ履歴 <span id="ext-completed-count" style="font-size:11px;color:#888;font-weight:400;"></span>
         </div>
-        <div class="backup-section" id="ext-completed-panel" style="display:none;">
-          <div style="font-size:12px;color:#555;margin-bottom:8px;">
-            過去に1枚ずつ形式で取り込みが完了したルートフォルダの履歴です。再度取り込もうとしたときに警告します。
-          </div>
-          <table id="ext-completed-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+        <div style="font-size:12px;color:#555;margin:4px 0 6px;">
+          過去に取り込みが完了したルートフォルダの履歴です。再度取り込もうとしたときに警告します。
+        </div>
+        <!-- v1.43.0 Phase D: タブバー（単体 / ルート別）-->
+        <div id="ext-completed-tabbar" style="display:flex;gap:2px;margin-bottom:0;flex-wrap:wrap;border-bottom:1px solid #c0cee0;"></div>
+        <!-- v1.43.0 Phase D: ソートバー（中央配置、Qu-Y3：進捗率→キャンセル数置換）-->
+        <div id="ext-completed-sort-bar" style="display:flex;justify-content:center;align-items:center;gap:6px;padding:4px 8px;background:#fafcff;border-bottom:1px solid #e3eaf2;font-size:11px;color:#555;flex-wrap:wrap;">
+          <label style="display:inline-flex;align-items:center;gap:4px;">
+            ソート：
+            <select id="ext-completed-sort-select" style="font-size:11px;padding:2px 6px;border:1px solid #d0d0d0;border-radius:4px;background:#fff;font-family:inherit;cursor:pointer;">
+              <option value="insertion">完了日時順</option>
+              <option value="path">パス名</option>
+              <option value="status">ステータス</option>
+              <option value="count">ファイル数</option>
+              <option value="cancelled">キャンセル数</option>
+              <option value="thumbsize">サムネ容量</option>
+            </select>
+          </label>
+        </div>
+        <!-- v1.43.0 Phase D: リサイズ可能なテーブルコンテナ -->
+        <div id="ext-completed-container" style="resize:vertical;overflow:auto;min-height:120px;max-height:60vh;border:1px solid #e0e0e0;border-radius:0 0 4px 4px;">
+          <table id="ext-completed-table" style="width:100%;min-width:600px;border-collapse:collapse;font-size:12px;table-layout:fixed;">
             <thead>
               <tr style="background:#f5f5f5;">
-                <th style="padding:5px 8px;text-align:left;border:1px solid #e0e0e0;">ルートパス</th>
+                <th style="padding:5px 8px;text-align:left;border:1px solid #e0e0e0;">ルートパス／サブフォルダ</th>
                 <th style="padding:5px 8px;text-align:left;border:1px solid #e0e0e0;width:120px;">完了日時</th>
                 <th style="padding:5px 8px;text-align:right;border:1px solid #e0e0e0;width:120px;">件数</th>
+                <th style="padding:5px 8px;text-align:right;border:1px solid #e0e0e0;width:80px;">キャンセル</th>
                 <th style="padding:5px 8px;text-align:left;border:1px solid #e0e0e0;width:60px;">操作</th>
               </tr>
             </thead>

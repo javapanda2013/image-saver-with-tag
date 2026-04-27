@@ -5,6 +5,55 @@
 
 ---
 
+## [1.43.0] - 2026-04-27
+
+### Added — 完了ルートフォルダ履歴をタブ式独立エリアに再構成（GROUP-19 Phase D）
+
+#### 経緯
+GROUP-19 は v1.27.0（Phase A：タブ骨格）／ v1.28.0（Phase B：6 種ソート、Phase C：リサイズ＋タブ D&D）まで実装済で、Phase D（完了履歴のタブ化）が残っていた。Qu-Y1〜Y6 で 2026-04-19 要件確定済み、過去経験再確認（GROUP-45 完了後の Q-recheck）で完了履歴側 D&D は **タブ並び順 D&D のみ** とユーザー指示。
+
+#### 修正内容
+
+**`src/settings/settings.html`** — UI 改修
+- 既存折りたたみ「▸ 完了ルートフォルダ履歴」（`ext-completed-toggle` + `ext-completed-panel` 折りたたみ）を **完全廃止**
+- タブ式独立エリアに置換：`ext-completed-tabbar`（単体タブ＋ルート別タブ）／`ext-completed-sort-bar`（6 種ソート select）／`ext-completed-container`（resize:vertical, max 60vh）／`ext-completed-table`（5 列：ルートパス/サブフォルダ・完了日時・件数・キャンセル数・操作）
+- ソート 6 種：完了日時順／パス名／ステータス／ファイル数／**キャンセル数**（Qu-Y3：進捗率→キャンセル数置換、完了履歴は全て 100% のため意味なし）／サムネ容量
+- `.ext-completed-tab[draggable="true"]` の grab/grabbing カーソル CSS を追加（取込予定 `.ext-fl-tab` と同パターン）
+
+**`src/settings/settings.js`** — データ構造拡張＋ helper 群
+- 新規完了記録に `mode: "single" | "subfolders"` ＋ `subfolders[]` フィールド付与（`session.folderListRef` から自動引き継ぎ、batch モードは `mode: "single"` 固定）
+- 既存記録（mode 不在）は **「不明」バッジ＋ 1 行表示**で互換維持（マイグレーション不要、Qu-Y5/Y6=A）
+- 状態変数 4 個追加：`_extCompletedFlActiveTab` / `_extCompletedFlSortModes` / `_extCompletedFlTabOrder` / `_extCompletedFlTableHeight`
+- 対応ストレージキー 4 個追加：`extImportCompletedFlActiveTab` / `extImportCompletedFlSortModes` / `extImportCompletedFlTabOrder` / `extImportCompletedFlTableHeight`
+- helper 7 個追加：
+  - `_extCompletedFlGetTabs()`：`["single", ...ordered roots]` 返却（`_extCompletedFlTabOrder` 順）
+  - `_extCompletedFlFilterByTab(tabId)`：単体タブは `mode !== "subfolders"` レコード、ルート別タブは該当 rootPath
+  - `_extCompletedFlRenderTabs()`：タブバー描画＋クリック切替＋ルート別タブの D&D 並び替え（`extImportCompletedFlTabOrder` 永続化）
+  - `_extCompletedFlGetSortMetric(record, mode)`：6 種ソートキー（cancelled は `skippedCount`、thumbsize は `_extThumbStatsCache` 経由）
+  - `_extCompletedFlSortRecords(records, mode)`：純関数ソート
+  - `_extCompletedFlSyncSortSelect()` / `_extCompletedFlSetupSortUI()`：sort-select バインド
+  - `_extCompletedFlSetupTableResize()`：ResizeObserver で高さ永続化（debounce 500ms）
+- `_extRenderCompletedRoots` を全面書き換え：タブ／ソート／リサイズ UI 初期化＋ filtered records 描画。subfolders レコードはルートヘッダ＋子 sub 行（取込予定の `_extRenderFolderList` と同パターン）
+- 旧折りたたみイベントハンドラ（`ext-completed-toggle` click）削除
+
+#### 期待される改善
+- 完了履歴が増えても折りたたみで隠れず、常時可視＋必要に応じてリサイズ
+- ルート別取込のサブフォルダ完了履歴を **個別行で確認可能**（mode="subfolders" レコードはルートヘッダ＋子 sub 行）
+- 6 種ソートで **キャンセル数が多い順** などで問題のあった取り込みを発見しやすく
+- タブ並び順を D&D で記憶可能（取込予定と同パターン）
+
+#### Files Changed
+- `manifest.json`：1.42.0 → 1.43.0
+- `src/settings/settings.html`：折りたたみ→タブ式独立エリアに置換、CSS に `.ext-completed-tab` D&D カーソル追加
+- `src/settings/settings.js`：新規記録に mode/subfolders 付与（2 経路）、状態 4 個＋ヘルパー 7 個追加、`_extRenderCompletedRoots` 全面書き換え、旧トグルハンドラ削除
+
+#### Files Unchanged
+- `_extCompletedRoots` 既存記録のデータ構造は変更なし（mode 不在で「不明」表示でフォールバック、マイグレーション不要）
+- 取込予定リスト側（`_extRenderFolderList` ほか）は変更なし
+- `native/image_saver.py`：Native 変更なし（v1.30.7 のまま）
+
+---
+
 ## [1.42.0] - 2026-04-27
 
 ### Added — 取り込み予定フォルダリストにステータス絞り込みトグル群を追加（GROUP-20-tlsbl1）

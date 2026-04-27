@@ -93,6 +93,14 @@ let _extFlTableHeight = null;
 // { [tabId]: { notstarted: bool, inprogress: bool, done: bool, empty: bool } }
 // タブ未登録時のデフォルトは _extFlDefaultStatusFilter で「完了」OFF・他 ON
 let _extFlStatusFilters = {};
+
+// ---- v1.43.0 GROUP-19 Phase D: 完了ルートフォルダ履歴のタブ化（取込予定とは独立エリア）----
+// 既存折りたたみ UI を廃止し、取込予定と同じタブ式（単体タブ＋ルート別タブ）に置換。
+// 取込予定の `_extFl*` 変数群と並行運用するため、prefix `_extCompletedFl*` で分離する。
+let _extCompletedFlActiveTab  = "single";   // extImportCompletedFlActiveTab
+let _extCompletedFlSortModes  = {};         // extImportCompletedFlSortModes、{ [tabId]: mode }
+let _extCompletedFlTabOrder   = [];         // extImportCompletedFlTabOrder、ルート別タブの並び順
+let _extCompletedFlTableHeight = null;      // extImportCompletedFlTableHeight、テーブル領域高さ
 // サブフォルダピッカー用: ドラッグ操作の状態
 let _extPickerDrag     = null;
 //   { mode: "unify"|"invert", target: bool, lastIdx: number, processed: Set<number>, anchorIdx: number }
@@ -6604,6 +6612,7 @@ async function executeExternalImport() {
         doneCount:    c.doneCount,
         skippedCount: 0,
         source:       "batch",
+        mode:         "single", // v1.43.0 GROUP-19 Phase D：batch モードは rootPath 直下取り込みなので single 扱い
       });
     }
     await browser.storage.local.set({ extImportCompletedRoots: _extCompletedRoots });
@@ -6674,6 +6683,9 @@ async function _setupExtPerItemMode() {
     "extImportFlSortModes", "extImportFlTabOrder", "extImportFlTableHeight",
     // v1.42.0 GROUP-20-tlsbl1: ステータス絞り込み（タブ別）
     "extImportFlStatusFilters",
+    // v1.43.0 GROUP-19 Phase D: 完了ルートフォルダ履歴のタブ化
+    "extImportCompletedFlActiveTab", "extImportCompletedFlSortModes",
+    "extImportCompletedFlTabOrder", "extImportCompletedFlTableHeight",
   ]);
   _extMode           = stored.extImportMode       || "batch";
   _extSessions       = stored.extImportSessions   || [];
@@ -6684,6 +6696,11 @@ async function _setupExtPerItemMode() {
   _extFlTabOrder     = stored.extImportFlTabOrder || [];
   _extFlTableHeight  = stored.extImportFlTableHeight || null;
   _extFlStatusFilters = stored.extImportFlStatusFilters || {}; // v1.42.0 GROUP-20-tlsbl1
+  // v1.43.0 GROUP-19 Phase D
+  _extCompletedFlActiveTab  = stored.extImportCompletedFlActiveTab  || "single";
+  _extCompletedFlSortModes  = stored.extImportCompletedFlSortModes  || {};
+  _extCompletedFlTabOrder   = stored.extImportCompletedFlTabOrder   || [];
+  _extCompletedFlTableHeight = stored.extImportCompletedFlTableHeight || null;
   // v1.23.0
   _extCarryover = Object.assign(
     { tags: false, subtags: false, authors: false, savepath: false },
@@ -6735,19 +6752,8 @@ async function _setupExtPerItemMode() {
   document.getElementById("ext-fl-bulk-peritem")?.addEventListener("click", () => _extFlBulkImport("per_item"));
   document.getElementById("ext-fl-bulk-delete")?.addEventListener("click",  () => _extFlBulkDelete());
 
-  // C 完了履歴トグル
-  document.getElementById("ext-completed-toggle")?.addEventListener("click", () => {
-    const panel = document.getElementById("ext-completed-panel");
-    const toggle = document.getElementById("ext-completed-toggle");
-    const isOpen = panel.style.display !== "none";
-    panel.style.display = isOpen ? "none" : "";
-    toggle.textContent = (isOpen ? "▸" : "▾")
-      + " 完了ルートフォルダ履歴 ";
-    const cntSpan = document.createElement("span");
-    cntSpan.style.cssText = "font-size:11px;color:#888;font-weight:400;";
-    cntSpan.textContent = `(${_extCompletedRoots.length} 件)`;
-    toggle.appendChild(cntSpan);
-  });
+  // v1.43.0 GROUP-19 Phase D：完了履歴は折りたたみ廃止 → タブ式独立エリア化済（ext-completed-toggle / ext-completed-panel 削除）
+  // タブ／ソート／リサイズ／D&D の初期化は _extRenderCompletedRoots 内で行う
 
   // v1.23.4: GROUP-11-carryover-move
   // 引き継ぎチェックの UI は 1枚ずつ取り込みモーダル内の各項目ラベル横へ移設済み。
@@ -8191,49 +8197,256 @@ async function _extResumeSkipped(session) {
 }
 
 // ---------- 完了ルートフォルダ履歴 ----------
+// v1.43.0 GROUP-19 Phase D：折りたたみ UI を廃止し、取込予定と同じタブ式独立エリアに置換。
+// データは _extCompletedRoots で、新規記録は { mode, subfolders } を保持（既存記録は undefined → 「不明／内訳なし」表示）。
+// タブ構成：単体タブ（mode === "single" / undefined）＋ ルート別タブ（mode === "subfolders" の各 rootPath）
+
+/** タブ一覧を返す（"single" + ルート別 normalized rootPath 配列、_extCompletedFlTabOrder 順） */
+function _extCompletedFlGetTabs() {
+  const rootSet = new Set();
+  for (const r of _extCompletedRoots) {
+    if (r.mode === "subfolders" && r.rootPath) {
+      rootSet.add(_normalizeExtPath(r.rootPath));
+    }
+  }
+  const ordered = [
+    ..._extCompletedFlTabOrder.filter(k => rootSet.has(k)),
+    ...Array.from(rootSet).filter(k => !_extCompletedFlTabOrder.includes(k)),
+  ];
+  return ["single", ...ordered];
+}
+
+/** 該当タブの完了記録を返す（single タブは subfolders 以外の record） */
+function _extCompletedFlFilterByTab(tabId) {
+  if (tabId === "single") {
+    return _extCompletedRoots.filter(r => r.mode !== "subfolders");
+  }
+  return _extCompletedRoots.filter(r =>
+    r.mode === "subfolders" && _normalizeExtPath(r.rootPath) === tabId
+  );
+}
+
+/** タブバーを描画（取込予定の _extFlRenderTabs と同パターン、D&D 含む） */
+function _extCompletedFlRenderTabs() {
+  const bar = document.getElementById("ext-completed-tabbar");
+  if (!bar) return;
+  bar.innerHTML = "";
+  const tabs = _extCompletedFlGetTabs();
+  // active が消失した場合は単体に戻す
+  if (!tabs.includes(_extCompletedFlActiveTab)) _extCompletedFlActiveTab = "single";
+
+  for (const tabId of tabs) {
+    const isSingle = tabId === "single";
+    const cnt = _extCompletedFlFilterByTab(tabId).length;
+    const tab = document.createElement("div");
+    tab.className = "ext-completed-tab";
+    tab.dataset.tabId = tabId;
+    tab.style.cssText = `padding:5px 12px;font-size:11px;background:${tabId === _extCompletedFlActiveTab ? "#e8f4fd" : "#f5f5f5"};border:1px solid #c0cee0;border-bottom:none;border-radius:4px 4px 0 0;cursor:pointer;color:${tabId === _extCompletedFlActiveTab ? "#2c3e50" : "#666"};font-weight:${tabId === _extCompletedFlActiveTab ? "600" : "400"};`;
+    if (isSingle) {
+      tab.textContent = `単体 (${cnt})`;
+      tab.title = "ルート単独の完了記録";
+    } else {
+      const last = tabId.split(/[\\/]/).filter(Boolean).pop() || tabId;
+      tab.textContent = `${last} (${cnt})`;
+      tab.title = tabId;
+      tab.draggable = true;
+      tab.addEventListener("dragstart", (e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", tabId); });
+      tab.addEventListener("dragover",  (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; });
+      tab.addEventListener("drop",      async (e) => {
+        e.preventDefault();
+        const src = e.dataTransfer.getData("text/plain");
+        if (!src || src === tabId) return;
+        const without = _extCompletedFlTabOrder.filter(k => k !== src);
+        const idx = without.indexOf(tabId);
+        without.splice(idx >= 0 ? idx : without.length, 0, src);
+        // タブ順序未登録のルートも吸収する
+        const allRoots = _extCompletedFlGetTabs().filter(t => t !== "single");
+        for (const k of allRoots) if (!without.includes(k)) without.push(k);
+        _extCompletedFlTabOrder = without;
+        await browser.storage.local.set({ extImportCompletedFlTabOrder: _extCompletedFlTabOrder });
+        _extCompletedFlRenderTabs();
+      });
+    }
+    tab.addEventListener("click", async () => {
+      if (_extCompletedFlActiveTab === tabId) return;
+      _extCompletedFlActiveTab = tabId;
+      await browser.storage.local.set({ extImportCompletedFlActiveTab: tabId });
+      _extRenderCompletedRoots();
+    });
+    bar.appendChild(tab);
+  }
+}
+
+/** ソートキー（Qu-Y3：進捗率→キャンセル数置換、6 種） */
+function _extCompletedFlGetSortMetric(record, mode) {
+  switch (mode) {
+    case "path":      return (record.rootPath || "").toLowerCase();
+    case "status":    return _extFlStatusOrder("done"); // 完了履歴は全て「完了」前提なので同値
+    case "count":     return -(record.totalCount ?? 0); // 多い順
+    case "cancelled": return -(record.skippedCount ?? 0); // 多い順
+    case "thumbsize": {
+      // サムネ容量は externalImportThumbStats 経由で参照（mode が subfolders なら subs 合計、single はそのまま）
+      let total = 0;
+      if (record.mode === "subfolders" && Array.isArray(record.subfolders)) {
+        for (const s of record.subfolders) {
+          total += (_extThumbStatsCache[_normalizeExtPath(s.path || "")]?.totalSize) || 0;
+        }
+      } else {
+        total = (_extThumbStatsCache[_normalizeExtPath(record.rootPath || "")]?.totalSize) || 0;
+      }
+      return -total; // 大きい順
+    }
+    case "insertion":
+    default:
+      return -new Date(record.completedAt || 0).getTime(); // 新しい順
+  }
+}
+
+function _extCompletedFlSortRecords(records, mode) {
+  const arr = [...records];
+  arr.sort((a, b) => {
+    const ka = _extCompletedFlGetSortMetric(a, mode);
+    const kb = _extCompletedFlGetSortMetric(b, mode);
+    if (ka < kb) return -1;
+    if (ka > kb) return 1;
+    return 0;
+  });
+  return arr;
+}
+
+function _extCompletedFlSyncSortSelect() {
+  const sel = document.getElementById("ext-completed-sort-select");
+  if (!sel) return;
+  sel.value = _extCompletedFlSortModes[_extCompletedFlActiveTab] || "insertion";
+}
+
+function _extCompletedFlSetupSortUI() {
+  const sel = document.getElementById("ext-completed-sort-select");
+  if (!sel || sel.dataset.bound) return;
+  sel.dataset.bound = "1";
+  sel.addEventListener("change", () => {
+    _extCompletedFlSortModes = { ..._extCompletedFlSortModes, [_extCompletedFlActiveTab]: sel.value };
+    browser.storage.local.set({ extImportCompletedFlSortModes: _extCompletedFlSortModes }).catch(() => {});
+    _extRenderCompletedRoots();
+  });
+}
+
+function _extCompletedFlSetupTableResize() {
+  const cont = document.getElementById("ext-completed-container");
+  if (!cont || cont.dataset.bound) return;
+  cont.dataset.bound = "1";
+  if (_extCompletedFlTableHeight) cont.style.height = _extCompletedFlTableHeight + "px";
+  let saveTimer = null;
+  const ro = new ResizeObserver(() => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      _extCompletedFlTableHeight = Math.round(cont.offsetHeight);
+      browser.storage.local.set({ extImportCompletedFlTableHeight: _extCompletedFlTableHeight }).catch(() => {});
+    }, 500);
+  });
+  ro.observe(cont);
+}
 
 function _extRenderCompletedRoots() {
   const tbody  = document.getElementById("ext-completed-tbody");
   const emptyEl = document.getElementById("ext-completed-empty");
   const cntEl   = document.getElementById("ext-completed-count");
   if (!tbody) return;
-  tbody.innerHTML = "";
   if (cntEl) cntEl.textContent = `(${_extCompletedRoots.length} 件)`;
+
+  // タブ／ソート／リサイズ UI 初期化（初回のみ有効）
+  _extCompletedFlRenderTabs();
+  _extCompletedFlSetupSortUI();
+  _extCompletedFlSetupTableResize();
+  _extCompletedFlSyncSortSelect();
+
+  tbody.innerHTML = "";
+
   if (_extCompletedRoots.length === 0) {
-    if (emptyEl) emptyEl.style.display = "";
+    if (emptyEl) {
+      emptyEl.style.display = "";
+      emptyEl.textContent = "履歴はありません。";
+    }
+    return;
+  }
+
+  const sortMode = _extCompletedFlSortModes[_extCompletedFlActiveTab] || "insertion";
+  const filtered = _extCompletedFlSortRecords(_extCompletedFlFilterByTab(_extCompletedFlActiveTab), sortMode);
+
+  if (filtered.length === 0) {
+    if (emptyEl) {
+      emptyEl.style.display = "";
+      emptyEl.textContent = _extCompletedFlActiveTab === "single"
+        ? "単体取り込みの完了履歴はありません。"
+        : "このルートに属するサブフォルダ完了履歴はありません。";
+    }
     return;
   }
   if (emptyEl) emptyEl.style.display = "none";
 
-  // 新しい順
-  const sorted = [..._extCompletedRoots].sort(
-    (a, b) => new Date(b.completedAt) - new Date(a.completedAt));
-
-  for (const r of sorted) {
+  // 行ビルダー：single record と subfolders 内 sub の共通 builder
+  const buildRow = (record, displayPath, isSubChild = false) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td style="padding:5px 8px;border:1px solid #e0e0e0;word-break:break-all;"></td>
-      <td style="padding:5px 8px;border:1px solid #e0e0e0;"></td>
-      <td style="padding:5px 8px;border:1px solid #e0e0e0;text-align:right;font-size:11px;color:#555;"></td>
-      <td style="padding:5px 8px;border:1px solid #e0e0e0;"></td>`;
-    const tds = tr.querySelectorAll("td");
-    tds[0].textContent = r.rootPath;
-    tds[1].textContent = (r.completedAt || "").slice(0, 10);
-    tds[2].textContent = `✓${r.doneCount ?? 0} / ⏭${r.skippedCount ?? 0}`;
-    const btn = document.createElement("button");
-    btn.className = "backup-btn";
-    btn.style.cssText = "padding:2px 8px;font-size:11px;";
-    btn.textContent = "🗑";
-    btn.addEventListener("click", async () => {
-      if (!confirm("履歴から削除しますか？")) return;
-      _extCompletedRoots = _extCompletedRoots.filter(x =>
-        (x.rootPath || "").toLowerCase() !== (r.rootPath || "").toLowerCase());
-      await browser.storage.local.set({ extImportCompletedRoots: _extCompletedRoots });
-      _extRenderCompletedRoots();
-      _extRenderFolderList();
-    });
-    tds[3].appendChild(btn);
-    tbody.appendChild(tr);
+    const td0 = document.createElement("td");
+    td0.style.cssText = `padding:5px 8px;border:1px solid #e0e0e0;word-break:break-all;${isSubChild ? "padding-left:24px;" : ""}`;
+    td0.textContent = displayPath;
+    if (record.mode !== "subfolders" && record.mode !== "single" && !isSubChild) {
+      // 既存記録（mode 不在）には「不明」バッジ
+      const badge = document.createElement("span");
+      badge.style.cssText = "margin-left:6px;font-size:10px;color:#fff;background:#888;padding:1px 6px;border-radius:8px;";
+      badge.textContent = "不明";
+      td0.appendChild(badge);
+    }
+    tr.appendChild(td0);
+
+    const td1 = document.createElement("td");
+    td1.style.cssText = "padding:5px 8px;border:1px solid #e0e0e0;font-size:11px;color:#666;";
+    td1.textContent = (record.completedAt || "").slice(0, 10);
+    tr.appendChild(td1);
+
+    const td2 = document.createElement("td");
+    td2.style.cssText = "padding:5px 8px;border:1px solid #e0e0e0;text-align:right;font-size:11px;color:#555;";
+    td2.textContent = isSubChild ? "" : `✓${record.doneCount ?? 0} / 計${record.totalCount ?? 0}`;
+    tr.appendChild(td2);
+
+    const td3 = document.createElement("td");
+    td3.style.cssText = "padding:5px 8px;border:1px solid #e0e0e0;text-align:right;font-size:11px;color:#555;";
+    td3.textContent = isSubChild ? "" : `⏭${record.skippedCount ?? 0}`;
+    tr.appendChild(td3);
+
+    const td4 = document.createElement("td");
+    td4.style.cssText = "padding:5px 8px;border:1px solid #e0e0e0;";
+    if (!isSubChild) {
+      const btn = document.createElement("button");
+      btn.className = "backup-btn";
+      btn.style.cssText = "padding:2px 8px;font-size:11px;";
+      btn.textContent = "🗑";
+      btn.addEventListener("click", async () => {
+        if (!confirm("履歴から削除しますか？")) return;
+        _extCompletedRoots = _extCompletedRoots.filter(x =>
+          (x.rootPath || "").toLowerCase() !== (record.rootPath || "").toLowerCase());
+        await browser.storage.local.set({ extImportCompletedRoots: _extCompletedRoots });
+        _extRenderCompletedRoots();
+        _extRenderFolderList();
+      });
+      td4.appendChild(btn);
+    }
+    tr.appendChild(td4);
+    return tr;
+  };
+
+  for (const record of filtered) {
+    if (record.mode === "subfolders" && Array.isArray(record.subfolders) && record.subfolders.length > 0) {
+      // ルートヘッダ
+      tbody.appendChild(buildRow(record, record.rootPath + " （サブフォルダ別）", false));
+      // 子 sub 行
+      for (const sub of record.subfolders) {
+        tbody.appendChild(buildRow(record, sub.path || "", true));
+      }
+    } else {
+      // single（または mode 不在の旧 record＝「不明」）は 1 行表示。subfolders が空配列の場合も同様
+      tbody.appendChild(buildRow(record, record.rootPath, false));
+    }
   }
 }
 
@@ -9497,7 +9710,14 @@ async function _extB1FinishSessionIfDone() {
   const total   = session.queue.length;
 
   // 完了ルートフォルダ履歴に追加（既存は上書き）
+  // v1.43.0 GROUP-19 Phase D：folderListRef から mode / subfolders を引き継ぎ（Qu-Y5=A / Qu-Y6=A）
   const rootPathKey = session.rootPath;
+  const _flRef = session.folderListRef;
+  const _fl = _flRef ? _extFolderList.find(f => f.id === _flRef.folderListId) : null;
+  const _recMode = _fl?.mode || "single";
+  const _recSubfolders = _fl?.mode === "subfolders"
+    ? (_fl.subfolders || []).map(s => ({ path: s.path }))
+    : undefined;
   _extCompletedRoots = _extCompletedRoots.filter(r =>
     (r.rootPath || "").toLowerCase() !== rootPathKey.toLowerCase());
   _extCompletedRoots.unshift({
@@ -9506,6 +9726,8 @@ async function _extB1FinishSessionIfDone() {
     totalCount:   total,
     doneCount:    done,
     skippedCount: skipped,
+    mode:         _recMode,
+    ...(_recSubfolders ? { subfolders: _recSubfolders } : {}),
   });
   await browser.storage.local.set({ extImportCompletedRoots: _extCompletedRoots });
 
