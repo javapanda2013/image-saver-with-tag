@@ -5,6 +5,38 @@
 
 ---
 
+## [1.43.1] - 2026-04-27
+
+### Fixed — 完了ルートフォルダ履歴が「1 枚ずつ形式」モードでしか表示されない不具合を修正（GROUP-19 Phase D hotfix）
+
+#### 経緯
+v1.43.0 で完了ルートフォルダ履歴を折りたたみ → タブ式独立エリアに改修した際、配置が `<div id="ext-per-item-mode">` 内のままで、batch モード（一括形式）切替時には `display: none` で非表示になっていた。ユーザー報告：「完了ルートフォルダ、1 枚ずつ形式でしか表示されてない」。
+
+batch モードでも完了記録は `_extCompletedRoots` に `mode: "single"` で記録される設計（settings.js:6598-6610）のため、UI も両モードで参照可能な位置に配置すべき。
+
+#### 修正内容
+
+**`src/settings/settings.html`**
+- 完了ルートフォルダ履歴セクション（タブバー＋ソートバー＋テーブル＋ empty メッセージ全体）を `ext-per-item-mode` の **外**（`ext-b1-overlay` の前、両モード共通エリア）に移設
+- 説明文に「（一括形式・1 枚ずつ形式の両方を含みます）」を追記
+- 移設後の旧位置にはプレースホルダーコメント（`<!-- v1.44.0 で ext-per-item-mode の外へ移設 -->`）を残置
+
+#### 影響範囲
+- batch モード（一括形式）でも完了履歴タブ・テーブル・ソート・リサイズ・タブ並び順 D&D が利用可能
+- per_item モード時の表示は変更なし（移設だけで構造は同じ）
+- 既存記録（mode 不在）の「不明」バッジ表示も両モードで動作
+
+#### Files Changed
+- `manifest.json`：1.43.0 → 1.43.1
+- `src/settings/settings.html`：完了ルートフォルダ履歴セクションを `ext-per-item-mode` 外へ移設
+
+#### Files Unchanged
+- `_extRenderCompletedRoots` / 4 状態変数 / 7 ヘルパー（v1.43.0 で実装）はすべて変更なし、HTML 移設のみで動作する設計
+- `_extCompletedRoots` データ構造は v1.43.0 から変更なし
+- `native/image_saver.py`：Native 変更なし（v1.30.7 のまま）
+
+---
+
 ## [1.43.0] - 2026-04-27
 
 ### Added — 完了ルートフォルダ履歴をタブ式独立エリアに再構成（GROUP-19 Phase D）
