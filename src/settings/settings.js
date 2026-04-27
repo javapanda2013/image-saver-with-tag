@@ -5241,7 +5241,8 @@ function _buildHistCardInner(card, entry, onThumbClick) {
   }
 
   // ── 情報を編集 パネル ──────────────────────────────────────────
-  const infoEditBtn     = card.querySelector(".hist-card-btn.info-edit");
+  // v1.45.0 GROUP-46：情報を編集ボタンは右上アイコンクラスタ内 (.hist-card-icon-btn.info-edit) へ移動
+  const infoEditBtn     = card.querySelector(".info-edit");
   const infoEditor      = card.querySelector(".hist-info-editor");
   const infoThumb       = card.querySelector(".hist-info-thumb");
   const editorChips     = card.querySelector(".hist-tag-editor-chips");

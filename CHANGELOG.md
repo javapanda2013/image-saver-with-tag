@@ -5,6 +5,38 @@
 
 ---
 
+## [1.45.1] - 2026-04-28
+
+### Fixed — v1.45.0 設定画面 保存履歴タイル描画失敗の hotfix
+
+#### 経緯
+v1.45.0 (GROUP-46) で「✏️ 情報を編集」ボタンを `.hist-card-btn.info-edit` から右上アイコンクラスタ内 `.hist-card-icon-btn.info-edit` へ移設したが、event handler 取得側のセレクタ（settings.js:5244）が旧構造（`.hist-card-btn.info-edit` 複合 class）のままだったため、要素を null として取得し `addEventListener` で TypeError が発生、保存履歴タブの描画自体が失敗していた。
+
+ユーザー報告：「Uncaught (in promise) TypeError: can't access property 'addEventListener', infoEditBtn is null」
+
+あわせて、v1.45.0 リリース時に Firefox CSS パーサが警告していた pre-existing の typo（`#ffeee` 5 文字 hex）も同 hotfix で bundle 修正（CLAUDE.md「リリース単位」ルール準拠）。
+
+#### 修正内容
+
+**`src/settings/settings.js`**
+- 5244 行：`card.querySelector(".hist-card-btn.info-edit")` → `card.querySelector(".info-edit")`
+- icon button のクラス構造変更後も `.info-edit` 単独 class はカード内で一意のため、selector 簡素化で対応
+
+**`src/settings/settings.html`**
+- 772 行：`.author-del-btn:hover { background: #ffeee; }` → `{ background: #fde; }`
+- `#ffeee` は無効な 5 文字 hex（#fde 短縮形のタイポと推察、他の `.dest-item-btn.del:hover` / `.bm-item-btn.del:hover` と同一値で揃える）
+
+#### Files Changed
+- `manifest.json`：1.45.0 → 1.45.1
+- `src/settings/settings.js`：1 箇所の selector 修正
+- `src/settings/settings.html`：CSS typo 修正
+
+#### Files Unchanged
+- `src/modal/modal.js`：modal は v1.45.0 で `.history-btn-id-copy` / `.history-btn-info-edit` クラス名を保持したため selector 影響なし
+- Native (`native/image_saver.py`)：本リリース変更なし
+
+---
+
 ## [1.45.0] - 2026-04-28
 
 ### Changed — GROUP-46 設定画面・保存ウィンドウ 保存履歴タイル レイアウト改善
