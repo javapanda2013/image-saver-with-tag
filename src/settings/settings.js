@@ -4890,6 +4890,14 @@ function _destroyGifSessionsInTree(rootEl) {
     if (!id) continue;
     const sess = _gifSessions.get(id);
     if (!sess) continue;
+    // v1.45.3 GROUP-49 fix：別 canvas に rebind 済みなら dormant 化 skip。
+    //   partial refresh で _initGifTile が rebind した後に本関数が走ると
+    //   sess.canvas を null 化してしまい代表サムネが描画されなくなる事象（v1.36.0 以来 pre-existing）。
+    //   sess.canvas === cv（このループで走査中の旧 canvas そのものが現在の binding）の時のみ unbind。
+    if (sess.canvas !== cv) {
+      try { delete cv.dataset.gifSessionId; } catch (_) {}
+      continue;
+    }
     if (sess.timerId) {
       try { clearTimeout(sess.timerId); } catch (_) {}
       sess.timerId = null;

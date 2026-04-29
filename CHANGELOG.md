@@ -5,6 +5,60 @@
 
 ---
 
+## [1.45.3] - 2026-04-29
+
+### Fixed — グループ化／解除直後に GIF 代表サムネが描画されない（GROUP-49 hotfix、v1.36.0 以来 pre-existing）
+
+#### 経緯
+v1.45.2 動作確認時にユーザー報告。v1.45.1 でも再現確認、**v1.36.0 GROUP-35-perf-B-2（partial refresh 導入）以来の pre-existing バグ**。リグレッションではなく潜在バグの顕在化を機に独立 hotfix として対応。
+
+#### 症状
+- 設定画面 保存履歴タブで「グループ化」「グループ解除」直後、新規構築されたグループ wrapper の代表サムネが空 placeholder のまま
+- 別タブに切替えて戻ると（renderHistoryGrid 全件再描画）表示復旧
+- GIF entry でのみ発症（非 GIF カードは別経路のため影響なし）
+
+#### 根本原因（GIF session 管理 vs partial refresh のクリーンアップ順序）
+
+`_partialRefreshGroupedDom`（settings.js:3810）末尾の orphan cleanup ループが、**既に新 canvas に rebind 済みの GIF session を dormant 化**してセッション binding を破壊していた。
+
+競合の手順：
+1. partial refresh で旧 wrapper を全 detach
+2. 新 wrapper 構築時、`_initGifTile` の rebind 経路で `cached.canvas = newCanvas` を実行（新 canvas に session を rebind）
+3. cleanup ループで `existingWrappers` を走査し、旧 canvas の `dataset.gifSessionId` から同じ session を引く
+4. `_destroyGifSessionsInTree` が `sess.canvas = null` を実行 → **新 canvas の binding を上書きで破壊**
+5. 以降、worker FRAME 応答時の drawImage は `sess.canvas == null` で skip → 新 canvas は永遠に空のまま
+
+タブ切替で renderHistoryGrid 全件再描画を経ると、新規 _initGifTile 経路で別 session が作成され表示復旧。
+
+#### 修正内容
+
+**`src/settings/settings.js`** L4883-4901 の `_destroyGifSessionsInTree` に rebind ガードを追加（4 行）：
+
+```js
+// v1.45.3 GROUP-49 fix：別 canvas に rebind 済みなら dormant 化 skip。
+//   partial refresh で _initGifTile が rebind した後に本関数が走ると
+//   sess.canvas を null 化してしまい代表サムネが描画されなくなる事象（v1.36.0 以来 pre-existing）。
+//   sess.canvas === cv（このループで走査中の旧 canvas そのものが現在の binding）の時のみ unbind。
+if (sess.canvas !== cv) {
+  try { delete cv.dataset.gifSessionId; } catch (_) {}
+  continue;
+}
+```
+
+リスク評価：低。dormant 化動作の条件を厳しくしただけで、`sess.canvas === cv` の従来ケースは挙動変更なし。orphan 旧 canvas からの dataset 削除は維持（DOM ノード自体は参照されなくなり GC される）。
+
+#### Files Changed
+- `manifest.json`：1.45.2 → 1.45.3
+- `src/settings/settings.js`：`_destroyGifSessionsInTree` に rebind ガード追加（+4 行）
+
+#### 動作確認の観点
+- Native Messaging：変更なし（Native 側 `image_saver.py` は据え置き）
+- グループ化／解除直後に GIF 代表サムネが即座に描画されるか
+- 既存の GIF サムネが影響を受けず継続描画されるか
+- 削除・期間削除等で GIF wrapper が真に dormant 化される経路（`sess.canvas === cv` ケース）が引き続き正しく動作するか
+
+---
+
 ## [1.45.2] - 2026-04-29
 
 ### Added — saveHistory IDB shadow（GROUP-35-perf-A Phase C-1）
