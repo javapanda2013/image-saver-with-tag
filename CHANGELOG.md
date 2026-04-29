@@ -5,6 +5,77 @@
 
 ---
 
+## [1.45.4] - 2026-04-29
+
+### Added — GROUP-46 Phase 4 全工程完了：trace-extractor / trace-linter ＋ コード ↔ 設計書 トレーサビリティ
+
+#### 経緯
+GROUP-46（仕様駆動開発スキルバンドル）の最終 Phase。Phase 4-prep（既存 5 skill の config-driven refactor、2026-04-28）→ 運用層追加（workflow-stamp / error-triage / release-flow、2026-04-29）に続き、Phase 4a〜4d-final を本日完走した。
+
+これにより BorgesTag の `.claude/skills/spec-driven/` バンドルは **10 skill ＋ 15 workflow_pattern ＋ scan-response gating ＋ コード ↔ 設計書トレーサビリティ** を全て揃えた状態になり、別プロジェクトへの流用も `config.yaml` 書換のみで可能。
+
+#### 実装内容
+
+**Phase 4a：trace-extractor skill 新設**
+- `.claude/skills/spec-driven/trace-extractor/`：SKILL.md ＋ trace_extractor.py
+- コード内 `@spec <file>#<anchor>` tag を全件抽出して `設計書類/AUTO_TRACE.md` に対応表自動生成
+- サブコマンド：`extract` / `summary` / `extract --dry-run`
+
+**Phase 4b：trace-linter skill 新設**
+- `.claude/skills/spec-driven/trace-linter/`：SKILL.md ＋ trace_linter.py
+- AUTO_TRACE.md と設計書 anchor を突合、broken link / orphan 検出
+- GitHub 風 anchor 正規化＋ section 番号の前方部分一致（短縮 anchor 救済）
+- サブコマンド：`validate` / `validate --no-orphan` / `validate --verbose`
+
+**Phase 4c：BorgesTag 重要関数 31 個に @spec tag 埋込**
+- `native/image_saver.py`：5 件（read_message / handle_save_image / make_gif_thumbnail / sort_entries / handle_list_dir）
+- `src/background/background.js`：12 件（sendNative / handleSave / handleInstantSave / handleSaveMulti / addSaveHistoryMulti / openThumbDB / saveThumbToIDB / getThumbFromIDB / generateMissingThumbs / getSaveHistory / updateHistoryEntryTags / _setStorageWithHistoryMirror / _mirrorSaveHistoryToIDB）
+- `src/modal/modal.js`：3 件（initModal / buildModalHTML / setupModalEvents）
+- `src/settings/settings.js`：9 件（setupHistoryTab / renderHistoryTab / renderHistoryGrid / _partialRefreshGroupedDom / _initGifTile / _destroyGifSessionsInTree / _buildHistCardInner / _extB1SaveAndNext）
+- `src/content/content.js`：2 件（showAt / updateInstantBtn）
+
+**Phase 4d-final：README / portfolio HTML / 設計書類 完成**
+- `.claude/skills/spec-driven/README.md` 新規（流用手順マニュアル、別プロジェクト導入向け）
+- `portfolio-site/docs/spec-driven-toolkit.html`：WIP placeholder 4 セクション完成、skill 表 10 skill 反映、連携図追加、サイドナビ追加
+- `設計書類/13_仕様駆動開発スキルバンドル.md`：status `stub` → `active`、進捗ログ最新化、§6（trace 実装詳細）／§8（流用手順）／§9（教訓・拡張可能性・派生提案）完成
+- `設計書類/AUTO_TRACE.md` 新規（trace-extractor 自動生成、frontmatter 付き）
+
+#### 検証結果
+- spec-linter validate：16 ファイル 0 エラー / 0 警告
+- trace-linter validate（broken のみ）：0 件
+- trace-linter validate（orphan 含む）：broken 0 / orphan 802（設計書全 section の自然な未参照、警告レベル）
+- node --check：4 ファイル（background / modal / settings / content）すべて PASS
+
+#### Files Changed
+- `manifest.json`：1.45.3 → 1.45.4
+- `native/image_saver.py`：@spec tag 5 件追加（機能変更なし、コメントのみ）
+- `src/background/background.js`：@spec tag 12 件追加
+- `src/modal/modal.js`：@spec tag 3 件追加
+- `src/settings/settings.js`：@spec tag 9 件追加
+- `src/content/content.js`：@spec tag 2 件追加
+
+`.claude/skills/spec-driven/`（git 管理外）：
+- trace-extractor / trace-linter 新規追加
+- README.md 新規作成
+
+設計書類：
+- 13_仕様駆動開発スキルバンドル.md：status / 進捗ログ / §6 / §8 / §9 更新
+- AUTO_TRACE.md：新規（自動生成）
+
+#### 動作確認の観点
+- Native Messaging：変更なし（Native 側 image_saver.py は @spec tag コメント追加のみ、`version:` comment 据え置き）
+- 拡張機能：機能変更なし、@spec tag は実行時影響ゼロのコメント
+- skill バンドル：trace-extractor / trace-linter / scan-response gating の動作は全て CLI で検証済（broken 0、linter 0 エラー、構文 OK）
+
+#### 引き継ぎ
+本リリースで GROUP-46 Phase 4 は完走。後続改善候補：
+- GROUP-46-T6-integration（compose 自動呼出統合）
+- GROUP-50（新規 global state 導入時の交点走査 pattern 化）
+- GROUP-53（引き継ぎ資料作成の patternize、handover-builder skill）
+詳細は `引き継ぎ資料/260429_phaseC1_skills/` 各ファイル参照。
+
+---
+
 ## [1.45.3] - 2026-04-29
 
 ### Fixed — グループ化／解除直後に GIF 代表サムネが描画されない（GROUP-49 hotfix、v1.36.0 以来 pre-existing）

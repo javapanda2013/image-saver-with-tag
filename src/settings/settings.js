@@ -2214,6 +2214,7 @@ function _setupHistChipInput({
   renderChips();
 }
 
+// @spec 02_詳細設計書.md#4-3
 function setupHistoryTab() {
   // 絞り込み入力（v1.21.1 でチップ化）
   const filterInput = document.getElementById("hist-filter");
@@ -3351,6 +3352,7 @@ function setupHistoryTab() {
   });
 }
 
+// @spec 02_詳細設計書.md#4-3
 async function renderHistoryTab() {
   const stored = await browser.storage.local.get(["saveHistory", "settingsHistoryPageSize"]);
   _historyData  = stored.saveHistory              || [];
@@ -3371,6 +3373,7 @@ async function renderHistoryTab() {
   renderHistoryGrid();
 }
 
+// @spec 02_詳細設計書.md#4-3
 function renderHistoryGrid() {
   const grid = document.getElementById("hist-grid");
 
@@ -3807,6 +3810,7 @@ function _buildGroupWrapperElement(group) {
 // 引数 prevSessionIds：操作前に targets が属していた sessionId 集合
 //   group 化前：targets が前に持っていた sessionId（null は除外、変化判定用）
 //   ungroup 前：targets が解除前に属していた sessionId
+// @spec 02_詳細設計書.md#4-3
 function _partialRefreshGroupedDom(targetIds, prevSessionIds) {
   const grid = document.getElementById("hist-grid");
   if (!grid) return;
@@ -4784,6 +4788,7 @@ function _onGifWorkerMessage(e) {
   }
 }
 
+// @spec 02_詳細設計書.md#4-3
 async function _initGifTile(canvas, entry) {
   // v1.41.3 GROUP-43 Phase 2-pool：thumbId pool check
   // 既存 session が dormant or active のいずれでも canvas を rebind して再開
@@ -4880,6 +4885,7 @@ function _destroyGifSession(id) {
  * 旧実装（v1.40.0〜v1.41.2）は session 自体を destroy していたため、
  * 再表示時に必ず Worker INIT（parseGIF + decompressFrames）が走り空白期間が発生していた。
  */
+// @spec 02_詳細設計書.md#4-3
 function _destroyGifSessionsInTree(rootEl) {
   if (!rootEl) return;
   const canvases = rootEl.matches?.("canvas[data-gif-session-id]")
@@ -5091,6 +5097,7 @@ function _showIdPasteConfirmDialog(src) {
   });
 }
 
+// @spec 02_詳細設計書.md#4-3
 function _buildHistCardInner(card, entry, onThumbClick) {
   card.dataset.entryId = entry.id;
   // v1.41.1 GROUP-43 Phase 2-reuse：renderHistoryGrid の既存タイル再利用判定で
@@ -9251,6 +9258,7 @@ function _extB1IsSameFolder(dirA, dirB) {
   return norm(dirA) === norm(dirB);
 }
 
+// @spec 02_詳細設計書.md#5-3
 async function _extB1SaveAndNext() {
   const session = _extActiveSession;
   if (!session) return;

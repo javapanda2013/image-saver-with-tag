@@ -47,6 +47,7 @@ except Exception as e:
 
 import functools
 
+# @spec 02_詳細設計書.md#6-4
 def sort_entries(entries):
     """エントリ一覧をWindowsエクスプローラー互換順でソート"""
     if USE_WIN_SORT:
@@ -60,6 +61,7 @@ def sort_entries(entries):
 # stdin/stdout で 4バイト長 + JSON のフレームをやり取りする
 # ---------------------------------------------------------------
 
+# @spec 02_詳細設計書.md#6-1
 def read_message():
     raw_length = sys.stdin.buffer.read(4)
     if not raw_length:
@@ -80,6 +82,7 @@ def send_message(obj):
 # コマンドハンドラ
 # ---------------------------------------------------------------
 
+# @spec 02_詳細設計書.md#6-2
 def handle_list_dir(path):
     """
     path が None のとき: 利用可能なドライブ一覧を返す
@@ -138,6 +141,7 @@ def handle_list_dir(path):
 
 
 
+# @spec 02_詳細設計書.md#6-3
 def make_gif_thumbnail(gif_bytes, max_size=600, _errors=None):
     """
     GIF バイト列の各フレームをリサイズして再合成し、
@@ -184,6 +188,7 @@ def make_gif_thumbnail(gif_bytes, max_size=600, _errors=None):
         return None, None, None
 
 
+# @spec 02_詳細設計書.md#6-2
 def handle_save_image(url, save_path, skip_thumb=False):
     """
     URL から画像をダウンロードして save_path に保存する。

@@ -138,6 +138,7 @@ window.addEventListener("resize", () => {
   }
 });
 
+// @spec 02_詳細設計書.md#2-1
 async function initModal() {
   // 画像情報を storage から取得
   const { _pendingModal } = await browser.storage.local.get("_pendingModal");
@@ -233,6 +234,7 @@ async function initModal() {
 // ----------------------------------------------------------------
 // HTML / CSS
 // ----------------------------------------------------------------
+// @spec 02_詳細設計書.md#2-6
 function buildModalHTML(defaultFilename) {
   return `
   <style>
@@ -1689,6 +1691,7 @@ function buildModalHTML(defaultFilename) {
 // ----------------------------------------------------------------
 // イベント設定
 // ----------------------------------------------------------------
+// @spec 02_詳細設計書.md#2-2
 function setupModalEvents(
   shadow, host, imageUrl, pageUrl, defaultFilename,
   existingTags, lastSaveDir, tagDestinations,

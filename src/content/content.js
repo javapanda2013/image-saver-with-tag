@@ -57,6 +57,7 @@ browser.storage.onChanged.addListener((changes) => {
   }
 });
 
+// @spec 02_詳細設計書.md#3-2
 function updateInstantBtn() {
   const btn = hoverWrap?.querySelector("#__image-saver-instant-btn__");
   if (btn) btn.style.display = instantSaveEnabled ? "" : "none";
@@ -187,6 +188,7 @@ function btnStyle(bg) {
   `;
 }
 
+// @spec 02_詳細設計書.md#3-1
 function showAt(img) {
   if (hoverButtonsTempHidden) return; // GROUP-2-a: 一時非表示中はホバーボタンを出さない
   const rect = img.getBoundingClientRect();

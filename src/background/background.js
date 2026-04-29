@@ -630,6 +630,7 @@ function _shallowResponsePreview(r) {
   }
 }
 
+// @spec 02_詳細設計書.md#1-4
 function sendNative(payload) {
   return new Promise((resolve, reject) => {
     // ① 入力検証: 型・必須フィールド・JSONシリアライズ可否・サイズ上限
@@ -836,6 +837,7 @@ function buildFilenameWithMeta(filename, tags, subTags, authors, settings) {
 // ----------------------------------------------------------------
 // 保存処理
 // ----------------------------------------------------------------
+// @spec 02_詳細設計書.md#1-2
 async function handleSave(payload) {
   // v1.41.8 R-B：modal が thumbDataUrl の代わりに thumbBlob を直送（btoa/atob 削減）
   const { imageUrl, filename, tags, subTags, authors, author, pageUrl, thumbBlob, thumbDataUrl, thumbWidth, thumbHeight, skipTagRecord, sessionId, sessionIndex, associatedAudio } = payload;
@@ -1222,6 +1224,7 @@ async function recordTagDestination(tags, savePath) {
 // ----------------------------------------------------------------
 // 即保存処理
 // ----------------------------------------------------------------
+// @spec 02_詳細設計書.md#1-3
 async function handleInstantSave(imageUrl, pageUrl) {
   try {
     // 保存先を「開始フォルダの優先順位」に従って決定
@@ -1414,11 +1417,13 @@ async function setBookmarks(data) {
 // 保存履歴（最大3件・新しい順）
 // ----------------------------------------------------------------
 
+// @spec 02_詳細設計書.md#1-6
 async function getSaveHistory() {
   const stored = await browser.storage.local.get("saveHistory");
   return { saveHistory: stored.saveHistory || [] };
 }
 
+// @spec 02_詳細設計書.md#1-6
 async function updateHistoryEntryTags(id, newTags) {
   if (!id || !Array.isArray(newTags)) return { ok: false };
   const stored  = await browser.storage.local.get("saveHistory");
@@ -1727,6 +1732,7 @@ const IDB_HISTORY_STORE = "saveHistory";
 //   は保持したまま `saveHistory` が追加される。
 const IDB_VERSION = 3;
 
+// @spec 02_詳細設計書.md#1-6
 function openThumbDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(IDB_NAME, IDB_VERSION);
@@ -1754,6 +1760,7 @@ function openThumbDB() {
 // v1.45.2 GROUP-35-perf-A Phase C-1: saveHistory IDB shadow ミラーリング
 // 戦略：clear → bulk put（差分最適化は C-2 以降）。
 // CLAUDE.md「IDB トランザクション寿命」遵守：tx 内で await を挟まず、request 発行のみで集約。
+// @spec 02_詳細設計書.md#1-6
 async function _mirrorSaveHistoryToIDB(history) {
   if (!Array.isArray(history)) return;
   const db = await openThumbDB();
@@ -1771,6 +1778,7 @@ async function _mirrorSaveHistoryToIDB(history) {
 
 // v1.45.2 GROUP-35-perf-A Phase C-1: 集約 helper。saveHistory を含む storage.local.set を全て本関数経由に統一。
 // C-3 切替時に本関数の中身（storage.local.set 削除＋ IDB のみへ書込＋差分通知）を差替えるだけで全 callsite が無改修で IDB-only 化。
+// @spec 02_詳細設計書.md#1-6
 async function _setStorageWithHistoryMirror(setObj) {
   await browser.storage.local.set(setObj);
   if (setObj && Array.isArray(setObj.saveHistory)) {
@@ -1783,6 +1791,7 @@ async function _setStorageWithHistoryMirror(setObj) {
   }
 }
 
+// @spec 02_詳細設計書.md#1-6
 async function saveThumbToIDB(blob) {
   const id = crypto.randomUUID();
   const db = await openThumbDB();
@@ -1848,6 +1857,7 @@ function _thumbCacheClear() {
   _thumbCacheBytes = 0;
 }
 
+// @spec 02_詳細設計書.md#1-6
 async function getThumbFromIDB(thumbId) {
   if (!thumbId) return null;
   // v1.35.0：LRU キャッシュヒット時は IDB read / btoa を完全に省略
@@ -2276,6 +2286,7 @@ async function _clearExtStatsEntry(rootPath) {
  * Python の READ_FILE_BASE64 でファイルを読み込み、OffscreenCanvas でリサイズして IDB に保存。
  * @returns {{ ok: true, generated: number, skipped: number, failed: number }}
  */
+// @spec 02_詳細設計書.md#1-6
 async function generateMissingThumbs(targetIds = null, overwrite = false) {
   const stored  = await browser.storage.local.get("saveHistory");
   const history = stored.saveHistory || [];
@@ -2397,6 +2408,7 @@ async function generateMissingThumbs(targetIds = null, overwrite = false) {
 // 複数保存先への一括保存
 // ----------------------------------------------------------------
 
+// @spec 02_詳細設計書.md#1-2
 async function handleSaveMulti(payload) {
   // v1.41.8 R-B：thumbBlob を直送経路として受取（thumbDataUrl は Native pyThumb 用に保持）
   const { imageUrl, filename, tags, subTags, authors, author, savePaths, pageUrl, thumbBlob, thumbDataUrl, thumbWidth, thumbHeight, skipTagRecord, sessionId, sessionIndex, associatedAudio } = payload;
@@ -2681,6 +2693,7 @@ async function addSaveHistory({ imageUrl, filename, savePath, tags, authors, pag
 }
 
 /** 複数保存先対応の履歴登録 */
+// @spec 02_詳細設計書.md#1-2
 async function addSaveHistoryMulti({ imageUrl, filename, savePaths, tags, authors, pageUrl, thumbBlob, thumbDataUrl, thumbWidth, thumbHeight, sessionId, sessionIndex, audioFilename, audioMimeType, audioDurationSec, _extraStorage }) {
   // v1.41.7 hznhv3 C-β + C-γ：authors 系も含めて 1 回の set に集約
   const stored  = await browser.storage.local.get(["saveHistory", "globalAuthors", "recentAuthors"]);
