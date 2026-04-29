@@ -27,6 +27,56 @@ function getEntryAuthors(entry) {
 }
 
 // ----------------------------------------------------------------
+// v1.45.2 GROUP-35-perf-A Phase C-1: saveHistory IDB shadow ミラーリング helper
+// background.js / modal.js と同等の inline 定義（同一 IDB を共有書込）。
+// 詳細は background.js の同名関数のコメント参照。
+// ----------------------------------------------------------------
+const _PHASE_C1_IDB_NAME    = "ImageSaverThumbDB";
+const _PHASE_C1_IDB_VERSION = 3;
+const _PHASE_C1_HISTORY_STORE = "saveHistory";
+
+async function _phaseC1OpenDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(_PHASE_C1_IDB_NAME, _PHASE_C1_IDB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(_PHASE_C1_HISTORY_STORE)) {
+        const s = db.createObjectStore(_PHASE_C1_HISTORY_STORE, { keyPath: "id" });
+        s.createIndex("savedAt", "savedAt", { unique: false });
+      }
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror   = (e) => reject(e.target.error);
+  });
+}
+
+async function _mirrorSaveHistoryToIDB(history) {
+  if (!Array.isArray(history)) return;
+  const db = await _phaseC1OpenDB();
+  await new Promise((resolve, reject) => {
+    const tx    = db.transaction(_PHASE_C1_HISTORY_STORE, "readwrite");
+    const store = tx.objectStore(_PHASE_C1_HISTORY_STORE);
+    store.clear();
+    for (const entry of history) {
+      if (entry && entry.id) store.put(entry);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror    = (e) => reject(e.target.error);
+  });
+}
+
+async function _setStorageWithHistoryMirror(setObj) {
+  await browser.storage.local.set(setObj);
+  if (setObj && Array.isArray(setObj.saveHistory)) {
+    try {
+      await _mirrorSaveHistoryToIDB(setObj.saveHistory);
+    } catch (err) {
+      console.warn("[Phase C-1] saveHistory IDB mirror 失敗", err);
+    }
+  }
+}
+
+// ----------------------------------------------------------------
 // 状態
 // ----------------------------------------------------------------
 // { "タグ名": [ { id, path, label }, ... ], ... }
@@ -123,12 +173,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (ta < tb) { outOfOrder = true; break; }
       }
       if (outOfOrder) {
-        saveHistory.sort((a, b) => {
+        saveHistory.sort((a, b) => {  // v1.45.2 Phase C-1: ソート後の保存は下記 _setStorageWithHistoryMirror 経由
           const ta = a?.savedAt ? new Date(a.savedAt).getTime() : 0;
           const tb = b?.savedAt ? new Date(b.savedAt).getTime() : 0;
           return tb - ta;
         });
-        await browser.storage.local.set({ saveHistory });
+        await _setStorageWithHistoryMirror({ saveHistory });
         console.log(`[GROUP-29] saveHistory を savedAt 降順で再ソート（${saveHistory.length} 件）`);
       }
     }
@@ -427,7 +477,7 @@ function buildTagRow(tag) {
           changed++;
         }
       });
-      if (changed > 0) await browser.storage.local.set({ saveHistory: history });
+      if (changed > 0) await _setStorageWithHistoryMirror({ saveHistory: history });
     } catch {}
 
     openTags.delete(tag);
@@ -1462,7 +1512,7 @@ async function importData(e) {
         const tb = b && b.savedAt ? new Date(b.savedAt).getTime() : 0;
         return tb - ta;
       });
-      await browser.storage.local.set({ saveHistory: merged });
+      await _setStorageWithHistoryMirror({ saveHistory: merged });
       log(`🗂 saveHistory: ${newItems.length} 件追加（合計 ${merged.length} 件、savedAt 降順でソート）`);
     } catch (err) { logError(`saveHistory の保存に失敗: ${err.message}`); return; }
   }
@@ -2458,7 +2508,7 @@ function setupHistoryTab() {
     try {
       const stored = await browser.storage.local.get("saveHistory");
       const history = (stored.saveHistory || []).filter(e => !_histSelected.has(e.id));
-      await browser.storage.local.set({ saveHistory: history });
+      await _setStorageWithHistoryMirror({ saveHistory: history });
       _histSelected.clear();
       await renderHistoryTab();
       completeBusyModal(`${n} 件削除しました`);
@@ -2494,7 +2544,7 @@ function setupHistoryTab() {
         entry.sessionIndex = null;
       });
 
-      await browser.storage.local.set({ saveHistory: history });
+      await _setStorageWithHistoryMirror({ saveHistory: history });
       _historyData = history;
       _histSelected.clear();
       // v1.35.0 GROUP-35-perf-B：通常表示モードはカード描画に影響しないので軽量更新
@@ -2538,7 +2588,7 @@ function setupHistoryTab() {
         entry.sessionIndex = i + 1;
       });
 
-      await browser.storage.local.set({ saveHistory: history });
+      await _setStorageWithHistoryMirror({ saveHistory: history });
       _historyData = history;
       _histSelected.clear();
       // v1.35.0 GROUP-35-perf-B：通常表示モードはカード描画に影響しないので軽量更新
@@ -2691,7 +2741,7 @@ function setupHistoryTab() {
           entry.tags = [...current];
         }
         if (changed) {
-          await browser.storage.local.set({ saveHistory: history });
+          await _setStorageWithHistoryMirror({ saveHistory: history });
           // globalTagsにも追加
           const { globalTags } = await browser.storage.local.get("globalTags");
           const gSet = new Set(globalTags || []);
@@ -2821,7 +2871,7 @@ function setupHistoryTab() {
           delete entry.author; // 旧形式フィールドを削除
         }
         if (changed) {
-          await browser.storage.local.set({ saveHistory: history });
+          await _setStorageWithHistoryMirror({ saveHistory: history });
           // globalAuthorsにも追加
           const { globalAuthors } = await browser.storage.local.get("globalAuthors");
           const gSet = new Set(globalAuthors || []);
@@ -2982,7 +3032,7 @@ function setupHistoryTab() {
         }
 
         if (processed > 0) {
-          await browser.storage.local.set({ saveHistory: history });
+          await _setStorageWithHistoryMirror({ saveHistory: history });
           // グローバルカタログにも反映（置換時のみ、新値を追加）
           if (isReplace) {
             const key = kind === "tag" ? "globalTags" : "globalAuthors";
@@ -3207,7 +3257,7 @@ function setupHistoryTab() {
         const targetIds = new Set(targets.map(e => e.id));
         _historyData = _historyData.filter(e => !targetIds.has(e.id));
         _histSelected.clear();
-        await browser.storage.local.set({ saveHistory: _historyData });
+        await _setStorageWithHistoryMirror({ saveHistory: _historyData });
         overlay.remove();
         renderHistoryGrid();
         completeBusyModal(`${targets.length} 件の履歴を削除しました`);
@@ -4049,7 +4099,7 @@ function _updateHistCardFields(card, entry) {
         const target = history.find(h => h.id === entry.id);
         if (target) {
           target.tags = (target.tags || []).filter(t => t !== tag);
-          await browser.storage.local.set({ saveHistory: history });
+          await _setStorageWithHistoryMirror({ saveHistory: history });
           _historyData = history;
           _refreshHistCardByEntryId(entry.id);
           _updateHistCount();
@@ -4475,7 +4525,7 @@ async function _toggleEntryFavorite(entryId) {
       throw new Error("saveHistory にエントリが見つかりません");
     }
     entry.favorite = next;
-    await browser.storage.local.set({ saveHistory: history });
+    await _setStorageWithHistoryMirror({ saveHistory: history });
     _historyData = history;
   } catch (err) {
     // ロールバック：DOM／メモリを元に戻す
@@ -4506,7 +4556,7 @@ async function _setBulkFavorite(targetIds, value) {
     }
   }
   if (changed > 0) {
-    await browser.storage.local.set({ saveHistory: history });
+    await _setStorageWithHistoryMirror({ saveHistory: history });
     _historyData = history;
     for (const id of targetIds) _updateFavButtonsForEntry(id, value);
   }
@@ -5375,7 +5425,7 @@ function _buildHistCardInner(card, entry, onThumbClick) {
     if (newPath) target.savePaths = [newPath];
     const gTagSet    = new Set([...(stored.globalTags    || []), ...pendingTags]);
     const gAuthorSet = new Set([...(stored.globalAuthors || []), ...pendingAuthors]);
-    await browser.storage.local.set({
+    await _setStorageWithHistoryMirror({
       saveHistory:   history,
       globalTags:    [...gTagSet],
       globalAuthors: [...gAuthorSet],
@@ -5587,7 +5637,7 @@ function _buildHistCardInner(card, entry, onThumbClick) {
       const target = history.find(h => h.id === entry.id);
       if (target) {
         target.tags = (target.tags || []).filter(t => t !== tag);
-        await browser.storage.local.set({ saveHistory: history });
+        await _setStorageWithHistoryMirror({ saveHistory: history });
         _historyData = history;
         _refreshHistCardByEntryId(entry.id);
         _updateHistCount();
@@ -5623,7 +5673,7 @@ function _buildHistCardInner(card, entry, onThumbClick) {
       await browser.runtime.sendMessage({ type: "DELETE_THUMB", thumbId: entry.thumbId });
     }
     _historyData = _historyData.filter(h => h.id !== entry.id);
-    await browser.storage.local.set({ saveHistory: _historyData });
+    await _setStorageWithHistoryMirror({ saveHistory: _historyData });
     _histSelected.delete(entry.id);
     _refreshHistCardByEntryId(entry.id);
     _updateHistToolbarButtons();
@@ -6775,7 +6825,7 @@ async function executeExternalImport() {
     }
   }
 
-  await browser.storage.local.set({
+  await _setStorageWithHistoryMirror({
     saveHistory:   merged,
     globalTags:    [...gTagSet],
     globalAuthors: [...gAuthorSet],
@@ -6847,7 +6897,7 @@ async function executeExternalImport() {
     const idSet = new Set(_lastImportIds);
     const { saveHistory: sh } = await browser.storage.local.get("saveHistory");
     const filtered = (sh || []).filter(e => !idSet.has(e.id));
-    await browser.storage.local.set({ saveHistory: filtered });
+    await _setStorageWithHistoryMirror({ saveHistory: filtered });
     _historyData   = filtered;
     _lastImportIds = null;
 
@@ -9309,7 +9359,7 @@ async function _extB1SaveAndNext() {
     }
   }
 
-  await browser.storage.local.set({
+  await _setStorageWithHistoryMirror({
     saveHistory:   merged,
     globalTags:    [...gTagSet],
     globalAuthors: [...gAuthorSet],

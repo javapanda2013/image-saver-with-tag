@@ -1426,7 +1426,7 @@ async function updateHistoryEntryTags(id, newTags) {
   const idx     = history.findIndex(e => e.id === id);
   if (idx === -1) return { ok: false };
   history[idx]  = { ...history[idx], tags: newTags };
-  await browser.storage.local.set({ saveHistory: history });
+  await _setStorageWithHistoryMirror({ saveHistory: history });
   return { ok: true };
 }
 
@@ -1441,7 +1441,7 @@ async function updateHistoryEntry(id, newTags, newAuthors, newSavePaths) {
   if (Array.isArray(newSavePaths)) history[idx].savePaths  = newSavePaths;
   const gTagSet    = new Set([...(stored.globalTags    || []), ...(newTags    || [])]);
   const gAuthorSet = new Set([...(stored.globalAuthors || []), ...(newAuthors || [])]);
-  await browser.storage.local.set({
+  await _setStorageWithHistoryMirror({
     saveHistory:   history,
     globalTags:    [...gTagSet],
     globalAuthors: [...gAuthorSet],
@@ -1714,10 +1714,18 @@ const IDB_STORE   = "thumbnails";
 //   構造：{ filePath: string(PK), blob: Blob, rootPath: string, bytes: number, savedAt: ISO }
 //   インデックス：`rootPath` でルートフォルダ単位の一括削除を効率化
 const IDB_EXT_STORE = "externalImportThumbs";
-// v1.25.0: IDB_VERSION を 1→2 にインクリメント（新ストア追加のため）。
-//   既存ユーザーは初回起動時に onupgradeneeded が発火し、既存 `thumbnails`
-//   は保持したまま `externalImportThumbs` が追加される。
-const IDB_VERSION = 2;
+// v1.45.2 GROUP-35-perf-A Phase C-1: saveHistory 用の IDB shadow store。
+//   storage.local.set による broadcast 巨大化（Parent +1.5GB / Web Content +2GB）の
+//   根本対策として saveHistory を IDB へ移送する Phase C の C-1 ステップ。
+//   C-1 段階では shadow（書込のみミラー、read 経路は storage.local 維持）。
+//   C-2 で UI 経由の移送＋ hidden 化、C-3 で read 切替＋差分通知＋エクスポート V2。
+//   構造：{ id: UUID(PK), savedAt: ISO, ...全フィールド（imageUrl / filename / savePaths / tags / authors / thumbId / favorite / sessionId / sessionIndex / audio* 等）}
+//   インデックス：`savedAt`（C-3 切替時の降順 read で利用）
+const IDB_HISTORY_STORE = "saveHistory";
+// v1.45.2: IDB_VERSION を 2→3 にインクリメント（新ストア追加のため）。
+//   既存ユーザーは初回起動時に onupgradeneeded が発火し、既存 thumbnails / externalImportThumbs
+//   は保持したまま `saveHistory` が追加される。
+const IDB_VERSION = 3;
 
 function openThumbDB() {
   return new Promise((resolve, reject) => {
@@ -1732,10 +1740,47 @@ function openThumbDB() {
         const extStore = db.createObjectStore(IDB_EXT_STORE, { keyPath: "filePath" });
         extStore.createIndex("rootPath", "rootPath", { unique: false });
       }
+      // v1.45.2 GROUP-35-perf-A Phase C-1
+      if (!db.objectStoreNames.contains(IDB_HISTORY_STORE)) {
+        const histStore = db.createObjectStore(IDB_HISTORY_STORE, { keyPath: "id" });
+        histStore.createIndex("savedAt", "savedAt", { unique: false });
+      }
     };
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror   = (e) => reject(e.target.error);
   });
+}
+
+// v1.45.2 GROUP-35-perf-A Phase C-1: saveHistory IDB shadow ミラーリング
+// 戦略：clear → bulk put（差分最適化は C-2 以降）。
+// CLAUDE.md「IDB トランザクション寿命」遵守：tx 内で await を挟まず、request 発行のみで集約。
+async function _mirrorSaveHistoryToIDB(history) {
+  if (!Array.isArray(history)) return;
+  const db = await openThumbDB();
+  await new Promise((resolve, reject) => {
+    const tx    = db.transaction(IDB_HISTORY_STORE, "readwrite");
+    const store = tx.objectStore(IDB_HISTORY_STORE);
+    store.clear();
+    for (const entry of history) {
+      if (entry && entry.id) store.put(entry);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror    = (e) => reject(e.target.error);
+  });
+}
+
+// v1.45.2 GROUP-35-perf-A Phase C-1: 集約 helper。saveHistory を含む storage.local.set を全て本関数経由に統一。
+// C-3 切替時に本関数の中身（storage.local.set 削除＋ IDB のみへ書込＋差分通知）を差替えるだけで全 callsite が無改修で IDB-only 化。
+async function _setStorageWithHistoryMirror(setObj) {
+  await browser.storage.local.set(setObj);
+  if (setObj && Array.isArray(setObj.saveHistory)) {
+    try {
+      await _mirrorSaveHistoryToIDB(setObj.saveHistory);
+    } catch (err) {
+      // shadow なので機能影響はゼロ。エラーは記録のみ。C-2 の移送ボタン実行時に整合修復。
+      console.warn("[Phase C-1] saveHistory IDB mirror 失敗", err);
+    }
+  }
 }
 
 async function saveThumbToIDB(blob) {
@@ -2341,7 +2386,7 @@ async function generateMissingThumbs(targetIds = null, overwrite = false) {
   }
 
   if (changed) {
-    await browser.storage.local.set({ saveHistory: history });
+    await _setStorageWithHistoryMirror({ saveHistory: history });
   }
 
   addLog("INFO", `サムネイル生成完了: ${generated}件成功 / ${failed}件失敗 / ${skipped}件スキップ`);
@@ -2746,7 +2791,8 @@ async function addSaveHistoryMulti({ imageUrl, filename, savePaths, tags, author
   // 渡す _extraStorage（lastSaveDir / globalTags / recentTags / recentSubTags / tagDestinations 等）と
   // saveHistory / globalAuthors / recentAuthors を 1 回の set にマージ。
   // 旧：保存毎 5+ 回の broadcast → 新：1 回（StructuredCloneHolder.deserialize 552MB × N → × 1）。
-  await browser.storage.local.set({
+  // v1.45.2 GROUP-35-perf-A Phase C-1：集約 helper 経由で IDB shadow にもミラー
+  await _setStorageWithHistoryMirror({
     ...(_extraStorage || {}),
     saveHistory:   history,
     globalAuthors: mergedGlobalAuthors,

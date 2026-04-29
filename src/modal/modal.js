@@ -11,6 +11,57 @@
  *   XSS のリスクはありません。
  */
 
+// ----------------------------------------------------------------
+// v1.45.2 GROUP-35-perf-A Phase C-1: saveHistory IDB shadow ミラーリング helper
+// background.js / settings.js と同等の inline 定義（同一 IDB を共有書込）。
+// 詳細は background.js の同名関数のコメント参照。
+// ----------------------------------------------------------------
+const _PHASE_C1_IDB_NAME    = "ImageSaverThumbDB";
+const _PHASE_C1_IDB_VERSION = 3;
+const _PHASE_C1_HISTORY_STORE = "saveHistory";
+
+async function _phaseC1OpenDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(_PHASE_C1_IDB_NAME, _PHASE_C1_IDB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      // background.js が initiator なので通常はここを通らないが、念のため定義
+      if (!db.objectStoreNames.contains(_PHASE_C1_HISTORY_STORE)) {
+        const s = db.createObjectStore(_PHASE_C1_HISTORY_STORE, { keyPath: "id" });
+        s.createIndex("savedAt", "savedAt", { unique: false });
+      }
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror   = (e) => reject(e.target.error);
+  });
+}
+
+async function _mirrorSaveHistoryToIDB(history) {
+  if (!Array.isArray(history)) return;
+  const db = await _phaseC1OpenDB();
+  await new Promise((resolve, reject) => {
+    const tx    = db.transaction(_PHASE_C1_HISTORY_STORE, "readwrite");
+    const store = tx.objectStore(_PHASE_C1_HISTORY_STORE);
+    store.clear();
+    for (const entry of history) {
+      if (entry && entry.id) store.put(entry);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror    = (e) => reject(e.target.error);
+  });
+}
+
+async function _setStorageWithHistoryMirror(setObj) {
+  await browser.storage.local.set(setObj);
+  if (setObj && Array.isArray(setObj.saveHistory)) {
+    try {
+      await _mirrorSaveHistoryToIDB(setObj.saveHistory);
+    } catch (err) {
+      console.warn("[Phase C-1] saveHistory IDB mirror 失敗", err);
+    }
+  }
+}
+
 // ウィンドウが開いたら即座に初期化
 document.addEventListener("DOMContentLoaded", () => {
   initModal();
@@ -2103,7 +2154,7 @@ function setupModalEvents(
       const e = history.find(h => h.id === entryId);
       if (!e) throw new Error("saveHistory にエントリが見つかりません");
       e.favorite = next;
-      await browser.storage.local.set({ saveHistory: history });
+      await _setStorageWithHistoryMirror({ saveHistory: history });
     } catch (err) {
       if (memEntry) memEntry.favorite = prev;
       _modalUpdateFavButtonsForEntry(entryId, prev);
@@ -2130,7 +2181,7 @@ function setupModalEvents(
       }
     }
     if (changed > 0) {
-      await browser.storage.local.set({ saveHistory: history });
+      await _setStorageWithHistoryMirror({ saveHistory: history });
       if (Array.isArray(allEntries)) {
         for (const h of allEntries) {
           if (idSet.has(h.id)) h.favorite = !!value;

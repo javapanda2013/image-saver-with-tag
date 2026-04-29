@@ -5,6 +5,60 @@
 
 ---
 
+## [1.45.2] - 2026-04-29
+
+### Added — saveHistory IDB shadow（GROUP-35-perf-A Phase C-1）
+
+#### 経緯
+保存処理メモリ急増事案（Parent +1.5GB / Web Content +2GB）の根本対策 Phase C のうち C-1 ステップ。`storage.local.set` による全 extension コンテキスト broadcast の巨大化を解消するため、最終的に saveHistory を IndexedDB へ移送する。本リリースは段階的移送の第 1 段として **IDB に shadow store を新設し、書込時に二重書込でミラーリング**する。
+
+C-1 段階では **shadow**（read 経路は storage.local 維持、UI 機能影響ゼロ）。C-2（v1.45.3 patch）で UI 経由の移送＋ hidden 化、C-3（v1.45.4 patch）で read 切替＋差分通知＋エクスポート V2、v1.46.0 minor で Phase C 完了の節目、cleanup（v1.49.0 想定）で旧 storage.local キー完全削除。
+
+詳細：プレビュー資料 `borgestag_phase_c1_impact.html`（25 callsite 影響調査、共通パターン抽出、API 設計、リファクタ手順、リスクと残課題）。
+
+#### 実装内容
+
+**`src/background/background.js`**
+- IDB schema：`IDB_VERSION` 2 → 3。新ストア `saveHistory`（keyPath: "id"、index: "savedAt"）追加。`onupgradeneeded` で既存 `thumbnails` / `externalImportThumbs` を保持したまま追加
+- 新規 helper：
+  - `_mirrorSaveHistoryToIDB(history)`：clear → bulk put 戦略で IDB shadow に全置換ミラー。CLAUDE.md「IDB トランザクション寿命」遵守（tx 内で await を挟まず request 発行のみで集約）
+  - `_setStorageWithHistoryMirror(setObj)`：集約 helper。`browser.storage.local.set(setObj)` 後、setObj に saveHistory が含まれれば IDB ミラー。失敗は `console.warn` で記録のみ（shadow なので機能影響ゼロ）
+- 既存 4 callsite を helper 経由に置換：
+  - `updateHistoryEntryTags` (L1429)
+  - `updateHistoryEntry` (L1444-1448)
+  - `generateMissingThumbs` (L2344)
+  - `addSaveHistoryMulti` (L2749-2754)
+
+**`src/modal/modal.js`**
+- 同等の helper inline 定義（同一 IDB を共有書込）
+- 既存 2 callsite を helper 経由に置換：
+  - `_modalToggleFavorite` (L2106)
+  - `_modalSetBulkFavorite` (L2133)
+
+**`src/settings/settings.js`**
+- 同等の helper inline 定義
+- 既存 19 callsite を helper 経由に置換：
+  - GROUP-29 起動時 sort / タグ rename / インポート merge / hist-delete-selected / hist-ungroup-selected / hist-group-selected / showAddTagDialog / showAddAuthorDialog / タグ・権利者の置換除去 / 期間削除 / hist-tag-del-btn 双子 2 件 / `_toggleFavorite` / `_setBulkFavorite` / `saveEntryNow` / `hist-card-btn.del` / 外部取り込み一括コミット / 外部取り込み undo / 外部取り込み B1
+
+合計 **25 callsite** すべて `_setStorageWithHistoryMirror` 経由に統一。C-3 切替時に本関数の中身を差替えるだけで全 callsite 無改修で IDB-only 化が可能。
+
+#### 戦略：clear → bulk put（差分最適化は C-2 以降）
+頻発経路（`saveEntryNow` の編集中自動保存、`addSaveHistoryMulti` の保存合流点）で history 数百件を全置換するコストが発生するが、shadow 化の正しさを最優先。差分 put / delete 最適化は C-2 で計測しつつ判断。
+
+#### Files Changed
+- `manifest.json`：1.45.1 → 1.45.2
+- `src/background/background.js`：IDB schema bump、helper 追加、4 callsite 置換
+- `src/modal/modal.js`：helper inline 定義、2 callsite 置換
+- `src/settings/settings.js`：helper inline 定義、19 callsite 置換
+
+#### 動作確認の観点
+- Native Messaging：変更なし（Native 側 `image_saver.py` は据え置き）
+- 既存挙動：read 経路は storage.local 維持のため UI 表示・機能はすべて従来通り
+- IDB shadow 検証：about:debugging で `ImageSaverThumbDB > saveHistory` ストア確認（保存・編集・削除・タグ rename・グループ化・お気に入り・外部取り込み・undo の各経路で IDB が storage.local と同期）
+- 性能：本リリースでは broadcast コストは未削減（C-3 切替で消失）。動作確認の中心は機能整合性
+
+---
+
 ## [1.45.1] - 2026-04-28
 
 ### Fixed — v1.45.0 設定画面 保存履歴タイル描画失敗の hotfix
