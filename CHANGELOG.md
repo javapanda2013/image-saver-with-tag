@@ -5,6 +5,47 @@
 
 ---
 
+## [1.46.4] - 2026-05-01
+
+### Fixed — GROUP-63：modal.js / settings.js 編集パネル全統一漏れ hotfix（pattern #21 適用、Tier 1 構造的予防）
+
+#### 経緯
+v1.46.3 push 直後にユーザー指摘：「モーダル側、ボタン修正されておらず（screenshot 添付：modal は ✕ / ✔ 保存 のみで undo button なし）」「過去 Q は全統一で実施、フローパターン提要忘れずに」。GROUP-59-fix（v1.46.3）で modal/settings 双子 UI の bottom-row layout 同期は実施したが、action button 内容／ undo stack ／ real-time autosave ／ save feedback ／ globalTags merge の 5 項目が未統一のまま AMO 自動署名 + Release 連鎖発火後の発覚。
+
+#### 違反原因（pattern #21 構造分析）
+1. ユーザー fb「modal側も合わせろ」を**視覚レイアウト同期**と狭義解釈し、JS handler の delta を audit せず実装着手
+2. pattern #5（既存仕様への言及）/ #11（メタ運用提案）の「coverage 報告は spec-cite 全件 grep 経由」要件が未適用
+3. pre-tag-check の 3 項目（manifest / CHANGELOG / main=remote）には機能完全性 audit が含まれず、検出不能だった
+4. 連続違反：v1.46.2 → v1.46.3 と同類「不完全 fix」が 2 連続発生
+
+#### 実装内容（Q-63-1 = a 確定、Tier 1）
+
+**GROUP-63-modal-unify：modal.js 編集パネル完全統一**
+- [src/modal/modal.js:3127](src/modal/modal.js:3127)：action button 3 つを settings.js と完全統一（`💾 保存` / `✕ 閉じる` / `↩ アンドゥ`、disabled 状態維持）
+- [src/modal/modal.js:3284-3367](src/modal/modal.js:3284)：`_modalSaveEntryNow()` helper 新設（settings.js の saveEntryNow と同等：`_readSaveHistory()` → `_setStorageWithHistoryMirror({saveHistory, globalTags, globalAuthors})` で migration aware 一括書込、ローカル `saveHistory` 配列 ＋ `entry` ＋ タイル meta / path 表示も同期）
+- [src/modal/modal.js:3284-3290](src/modal/modal.js:3284)：`_undoStack` / `_prevPath` / `_modalUpdateUndoBtn` 追加（addTag / deleteTag / addAuthor / deleteAuthor / changePath の 5 種 op 対応）
+- [src/modal/modal.js:3392-3496](src/modal/modal.js:3392)：tag chip 削除・候補選択・Backspace、author chip 削除・候補選択、tag/author Enter 入力すべてで undo push ＋ 自動保存
+- [src/modal/modal.js:3596-3611](src/modal/modal.js:3596)：path blur / Enter で `_modalCommitPathChange` 経由の差分検知 ＋ 自動保存
+- [src/modal/modal.js:3614-3631](src/modal/modal.js:3614)：undo button click handler 追加
+- [src/modal/modal.js:3640-3663](src/modal/modal.js:3640)：明示的保存ボタンを `_modalSaveEntryNow` 経由に統一、`✔ 保存済み` 1.2s disabled feedback 追加（settings.js と同一）
+
+**GROUP-63-claude-md-rule：CLAUDE.md「双子 UI 改修時」節新設**
+- [CLAUDE.md:427-444](CLAUDE.md)：spec-cite で双方全件 grep → delta 表をユーザーに提示 → 確定後実装、の 4 step を明文化。Tier 2 / 3（GROUP-64 / GROUP-65 別リリース）の構造的予防策も併記
+
+#### 検証結果
+- node --check：modal.js / settings.js / background.js PASS
+- pattern #21 適用：違反報告 ＋ 構造的予防 Tier 1（v1.46.4 同梱）／ Tier 2（GROUP-64 別）／ Tier 3（GROUP-65 別）の 3 段
+- Q-63-1 確定（a、2026-05-01）
+
+#### Files Changed
+- `manifest.json`：1.46.3 → 1.46.4
+- `src/modal/modal.js`：編集パネル handler 全面統一（HTML 3 buttons / undo / autosave / feedback / globalTags merge）
+- `CLAUDE.md`：「双子 UI 改修時」節新設
+
+#### Native 変更なし
+
+---
+
 ## [1.46.3] - 2026-05-01
 
 ### Changed — GROUP-59-fix：編集パネル UI レイアウト是正

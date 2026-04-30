@@ -3123,8 +3123,9 @@ function setupModalEvents(
                   <button class="history-id-paste-apply" type="button" title="貼付した識別情報から情報を読み取り、反映対象を選択するダイアログを開く" style="display:block;margin-top:4px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);border-radius:4px;cursor:pointer;color:#fff;font-size:11px;padding:3px 8px;font-family:inherit;width:200px;max-width:100%;">識別情報反映</button>
                 </div>
                 <div class="history-info-editor-actions" style="flex:0 0 auto;">
-                  <button class="history-info-editor-cancel">✕</button>
-                  <button class="history-info-editor-save">✔ 保存</button>
+                  <button class="history-info-editor-save">💾 保存</button>
+                  <button class="history-info-editor-cancel">✕ 閉じる</button>
+                  <button class="history-info-editor-undo" disabled>↩ アンドゥ</button>
                 </div>
               </div>
             </div>
@@ -3275,11 +3276,77 @@ function setupModalEvents(
       const infoThumb     = item.querySelector(".history-info-thumb");
       const cancelBtn     = item.querySelector(".history-info-editor-cancel");
       const saveBtn       = item.querySelector(".history-info-editor-save");
+      const undoBtn       = item.querySelector(".history-info-editor-undo");
       const idPasteInput  = item.querySelector(".history-id-paste-input");
       const idPasteApply  = item.querySelector(".history-id-paste-apply");
 
       let pendingTags    = new Set(entry.tags || []);
       let pendingAuthors = [...(entry.authors || (entry.author ? [entry.author] : []))];
+      // v1.46.4 GROUP-63 (a)：settings.js 統一 — undo stack / 自動保存 / globalTags merge
+      let _undoStack = [];
+      let _prevPath  = "";
+
+      function _modalUpdateUndoBtn() {
+        if (undoBtn) undoBtn.disabled = _undoStack.length === 0;
+      }
+
+      // v1.46.4 GROUP-63 (a)：settings.js の saveEntryNow と同じく
+      // saveHistory + globalTags + globalAuthors を一括書込（migration aware）
+      async function _modalSaveEntryNow() {
+        const history = await _readSaveHistory();
+        const stored  = await browser.storage.local.get(["globalTags", "globalAuthors"]);
+        const target  = history.find(h => h.id === entry.id);
+        if (!target) return;
+        target.tags    = [...pendingTags];
+        target.authors = [...pendingAuthors];
+        delete target.author;
+        const newPath = pathInput.value.trim();
+        if (newPath) target.savePaths = [newPath];
+        const gTagSet    = new Set([...(stored.globalTags    || []), ...pendingTags]);
+        const gAuthorSet = new Set([...(stored.globalAuthors || []), ...pendingAuthors]);
+        await _setStorageWithHistoryMirror({
+          saveHistory:   history,
+          globalTags:    [...gTagSet],
+          globalAuthors: [...gAuthorSet],
+        });
+        // ローカル saveHistory 配列も同期
+        const idx = saveHistory.findIndex(h => h.id === entry.id);
+        if (idx !== -1) {
+          saveHistory[idx].tags    = target.tags;
+          saveHistory[idx].authors = target.authors;
+          delete saveHistory[idx].author;
+          if (newPath) saveHistory[idx].savePaths = target.savePaths;
+        }
+        // entry も同期（保存ボタン押下時に reflect する元データ）
+        entry.tags = target.tags; entry.authors = target.authors;
+        delete entry.author;
+        if (newPath) entry.savePaths = target.savePaths;
+        // タイル meta 即時反映
+        const metaEl = item.querySelector(".history-meta");
+        if (metaEl) {
+          const dateSpan = metaEl.querySelector("span");
+          metaEl.innerHTML = "";
+          if (dateSpan) metaEl.appendChild(dateSpan);
+          for (const a of target.authors) {
+            const sp = document.createElement("span");
+            sp.className = "history-author"; sp.dataset.author = a;
+            sp.textContent = `✏️ ${a}`; metaEl.appendChild(sp);
+          }
+          for (const t of target.tags) {
+            const sp = document.createElement("span");
+            sp.className = "history-tag"; sp.dataset.tag = t;
+            sp.textContent = t; metaEl.appendChild(sp);
+          }
+        }
+        // パス表示も更新
+        if (newPath) {
+          const pathEl = item.querySelector(".history-path");
+          if (pathEl) {
+            pathEl.textContent = newPath;
+            pathEl.title       = newPath;
+          }
+        }
+      }
 
       function renderInfoTagChips() {
         tagChipsArea.innerHTML = "";
@@ -3289,8 +3356,12 @@ function setupModalEvents(
           chip.innerHTML = `${escapeHtml(t)}<button type="button" title="削除">×</button>`;
           chip.querySelector("button").addEventListener("click", (ev) => {
             ev.stopPropagation();
+            // v1.46.4 GROUP-63 (a)：undo stack 記録 ＋ 自動保存
+            _undoStack.push({ type: "deleteTag", tag: t });
             pendingTags.delete(t);
             renderInfoTagChips();
+            _modalSaveEntryNow();
+            _modalUpdateUndoBtn();
           });
           tagChipsArea.appendChild(chip);
         });
@@ -3308,11 +3379,15 @@ function setupModalEvents(
         tagSugPanel.querySelectorAll(".suggestion-item").forEach(el => {
           el.addEventListener("mousedown", (ev) => {
             ev.preventDefault();
+            // v1.46.4 GROUP-63 (a)：undo stack ＋ 自動保存
+            _undoStack.push({ type: "addTag", tag: el.dataset.tag });
             pendingTags.add(el.dataset.tag);
             renderInfoTagChips();
             tagEditorIn.value = "";
             tagSugPanel.classList.remove("visible");
             tagSugPanel.innerHTML = "";
+            _modalSaveEntryNow();
+            _modalUpdateUndoBtn();
           });
         });
       }
@@ -3325,8 +3400,12 @@ function setupModalEvents(
           chip.innerHTML = `${escapeHtml(a)}<button type="button" title="削除">×</button>`;
           chip.querySelector("button").addEventListener("click", (ev) => {
             ev.stopPropagation();
+            // v1.46.4 GROUP-63 (a)：undo stack ＋ 自動保存
+            _undoStack.push({ type: "deleteAuthor", author: a });
             pendingAuthors = pendingAuthors.filter(x => x !== a);
             renderInfoAuthorChips();
+            _modalSaveEntryNow();
+            _modalUpdateUndoBtn();
           });
           authChipsArea.appendChild(chip);
         });
@@ -3344,7 +3423,14 @@ function setupModalEvents(
           el.addEventListener("mousedown", (ev) => {
             ev.preventDefault();
             const a = el.textContent;
-            if (!pendingAuthors.includes(a)) { pendingAuthors.push(a); renderInfoAuthorChips(); }
+            if (!pendingAuthors.includes(a)) {
+              // v1.46.4 GROUP-63 (a)：undo stack ＋ 自動保存
+              _undoStack.push({ type: "addAuthor", author: a });
+              pendingAuthors.push(a);
+              renderInfoAuthorChips();
+              _modalSaveEntryNow();
+              _modalUpdateUndoBtn();
+            }
             authInput.value = "";
             authSugPanel.classList.remove("visible");
             authSugPanel.innerHTML = "";
@@ -3358,6 +3444,8 @@ function setupModalEvents(
         if (isOpen) { infoEditor.classList.remove("visible"); return; }
         pendingTags    = new Set(entry.tags || []);
         pendingAuthors = [...(entry.authors || (entry.author ? [entry.author] : []))];
+        // v1.46.4 GROUP-63 (a)：開閉時に undo stack / prevPath をリセット
+        _undoStack = [];
         renderInfoTagChips();
         renderInfoAuthorChips();
         tagEditorIn.value = "";
@@ -3365,6 +3453,8 @@ function setupModalEvents(
         authInput.value = "";
         authSugPanel.classList.remove("visible");
         pathInput.value = paths.length > 0 ? paths[0] : "";
+        _prevPath  = pathInput.value;
+        _modalUpdateUndoBtn();
         // サムネイル取得→インライン表示
         // v1.46.0 GROUP-57: GIF は Blob URL 経由で fetch（dataUrl の N コピー retain 回避）
         const thumbImg = item.querySelector(".history-thumb");
@@ -3453,15 +3543,26 @@ function setupModalEvents(
         if (e.key === "Enter") {
           e.preventDefault();
           const val = tagEditorIn.value.trim();
-          if (val && !pendingTags.has(val)) { pendingTags.add(val); renderInfoTagChips(); }
+          if (val && !pendingTags.has(val)) {
+            // v1.46.4 GROUP-63 (a)：undo stack ＋ 自動保存
+            _undoStack.push({ type: "addTag", tag: val });
+            pendingTags.add(val);
+            renderInfoTagChips();
+            _modalSaveEntryNow();
+            _modalUpdateUndoBtn();
+          }
           tagEditorIn.value = "";
           tagSugPanel.classList.remove("visible");
         } else if (e.key === "Escape") {
           infoEditor.classList.remove("visible");
         } else if (e.key === "Backspace" && !tagEditorIn.value && pendingTags.size > 0) {
           const last = [...pendingTags].at(-1);
+          // v1.46.4 GROUP-63 (a)：undo stack ＋ 自動保存
+          _undoStack.push({ type: "deleteTag", tag: last });
           pendingTags.delete(last);
           renderInfoTagChips();
+          _modalSaveEntryNow();
+          _modalUpdateUndoBtn();
         }
       });
 
@@ -3472,7 +3573,14 @@ function setupModalEvents(
         if (e.key === "Enter") {
           e.preventDefault();
           const val = authInput.value.trim();
-          if (val && !pendingAuthors.includes(val)) { pendingAuthors.push(val); renderInfoAuthorChips(); }
+          if (val && !pendingAuthors.includes(val)) {
+            // v1.46.4 GROUP-63 (a)：undo stack ＋ 自動保存
+            _undoStack.push({ type: "addAuthor", author: val });
+            pendingAuthors.push(val);
+            renderInfoAuthorChips();
+            _modalSaveEntryNow();
+            _modalUpdateUndoBtn();
+          }
           authInput.value = "";
           authSugPanel.classList.remove("visible");
         } else if (e.key === "Escape") {
@@ -3480,66 +3588,66 @@ function setupModalEvents(
         }
       });
 
-      pathInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") { e.preventDefault(); saveBtn.click(); }
+      // v1.46.4 GROUP-63 (a)：path blur で自動保存（settings.js commitPathChange と同じ）
+      async function _modalCommitPathChange() {
+        const newPath = pathInput.value.trim();
+        if (newPath !== _prevPath) {
+          _undoStack.push({ type: "changePath", oldPath: _prevPath, newPath });
+          _prevPath = newPath;
+          await _modalSaveEntryNow();
+          _modalUpdateUndoBtn();
+        }
+      }
+      pathInput.addEventListener("blur", _modalCommitPathChange);
+      pathInput.addEventListener("keydown", async (e) => {
+        if (e.key === "Enter") { e.preventDefault(); await _modalCommitPathChange(); }
       });
 
+      // v1.46.4 GROUP-63 (a)：undo button（settings.js と同じ undo stack 操作）
+      if (undoBtn) {
+        undoBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (!_undoStack.length) return;
+          const op = _undoStack.pop();
+          if      (op.type === "addTag")        pendingTags.delete(op.tag);
+          else if (op.type === "deleteTag")     pendingTags.add(op.tag);
+          else if (op.type === "addAuthor")     pendingAuthors = pendingAuthors.filter(a => a !== op.author);
+          else if (op.type === "deleteAuthor")  pendingAuthors.push(op.author);
+          else if (op.type === "changePath")    { pathInput.value = op.oldPath; _prevPath = op.oldPath; }
+          renderInfoTagChips();
+          renderInfoAuthorChips();
+          await _modalSaveEntryNow();
+          _modalUpdateUndoBtn();
+        });
+      }
+
+      // v1.46.4 GROUP-63 (a)：明示的な保存ボタン（リアルタイム保存と併用、settings.js と統一）
+      // - 入力欄に未確定値があれば commit ＋ undo stack に push
+      // - _modalSaveEntryNow() で saveHistory + globalTags + globalAuthors を一括書込
+      // - ✔ 保存済み 1.2s disabled で feedback（settings.js と同じ）
       saveBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
         const tagVal = tagEditorIn.value.trim();
-        if (tagVal && !pendingTags.has(tagVal)) pendingTags.add(tagVal);
-        const authVal = authInput.value.trim();
-        if (authVal && !pendingAuthors.includes(authVal)) pendingAuthors.push(authVal);
-        const newTags    = [...pendingTags];
-        const newAuthors = [...pendingAuthors];
-        const newPath    = pathInput.value.trim();
-        const newSavePaths = newPath ? [newPath] : undefined;
-        const res = await browser.runtime.sendMessage({
-          type:      "UPDATE_HISTORY_ENTRY",
-          id:        entry.id,
-          tags:      newTags,
-          authors:   newAuthors,
-          savePaths: newSavePaths,
-        });
-        if (res?.ok) {
-          entry.tags = newTags; entry.authors = newAuthors; delete entry.author;
-          if (newSavePaths) entry.savePaths = newSavePaths;
-          const idx = saveHistory.findIndex(h => h.id === entry.id);
-          if (idx !== -1) {
-            saveHistory[idx].tags = newTags; saveHistory[idx].authors = newAuthors; delete saveHistory[idx].author;
-            if (newSavePaths) saveHistory[idx].savePaths = newSavePaths;
-          }
-          // タイルのメタ表示を更新
-          const metaEl = item.querySelector(".history-meta");
-          if (metaEl) {
-            const dateSpan = metaEl.querySelector("span");
-            metaEl.innerHTML = "";
-            if (dateSpan) metaEl.appendChild(dateSpan);
-            for (const a of newAuthors) {
-              const sp = document.createElement("span");
-              sp.className = "history-author"; sp.dataset.author = a;
-              sp.textContent = `✏️ ${a}`; metaEl.appendChild(sp);
-            }
-            for (const t of newTags) {
-              const sp = document.createElement("span");
-              sp.className = "history-tag"; sp.dataset.tag = t;
-              sp.textContent = t; metaEl.appendChild(sp);
-            }
-          }
-          // パス表示も更新（v1.19.8 バグ修正）
-          if (newSavePaths) {
-            const pathEl = item.querySelector(".history-path");
-            if (pathEl) {
-              const isMulti = newSavePaths.length > 1;
-              pathEl.textContent = isMulti ? `${newSavePaths.length} 件のフォルダに保存` : (newSavePaths[0] || "");
-              pathEl.title = isMulti ? newSavePaths.join("\n") : (newSavePaths[0] || "");
-            }
-          }
-          infoEditor.classList.remove("visible");
-          showToast(shadow, "✅ 情報を更新しました");
-        } else {
-          showToast(shadow, "⚠️ 更新に失敗しました", true);
+        if (tagVal && !pendingTags.has(tagVal)) {
+          _undoStack.push({ type: "addTag", tag: tagVal });
+          pendingTags.add(tagVal);
+          renderInfoTagChips();
+          tagEditorIn.value = "";
         }
+        const authVal = authInput.value.trim();
+        if (authVal && !pendingAuthors.includes(authVal)) {
+          _undoStack.push({ type: "addAuthor", author: authVal });
+          pendingAuthors.push(authVal);
+          renderInfoAuthorChips();
+          authInput.value = "";
+        }
+        await _modalCommitPathChange();
+        await _modalSaveEntryNow();
+        _modalUpdateUndoBtn();
+        showToast(shadow, "保存しました ✔");
+        saveBtn.textContent = "✔ 保存済み";
+        saveBtn.disabled    = true;
+        setTimeout(() => { saveBtn.textContent = "💾 保存"; saveBtn.disabled = false; }, 1200);
       });
 
       return item;
