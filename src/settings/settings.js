@@ -4775,6 +4775,12 @@ function _frontCacheGet(thumbId) {
 
 function _frontCachePut(thumbId, dataUrl) {
   if (!thumbId || !dataUrl) return;
+  // GROUP-56 案 B (v1.46.0): GIF dataUrl は cache 対象外。
+  // 1 件あたり 38 MB+ で 100 MB 上限を瞬時に圧迫し、他の通常サムネを LRU で evict する。
+  // GIF は GIF Worker session pool 経由の rendering（_initGifTile）で別管理されており、
+  // dataUrl 経由の同期描画は不要（_attachThumbImgFromDataUrl で空白消去する目的に対し
+  // GIF は GIF Worker INIT 完了で初フレーム表示するため、dataUrl での先行描画は元々経路ゼロ）。
+  if (dataUrl.startsWith("data:image/gif;")) return;
   if (_frontDataUrlCache.has(thumbId)) {
     _frontDataUrlCacheBytes -= _frontDataUrlCache.get(thumbId).length;
     _frontDataUrlCache.delete(thumbId);

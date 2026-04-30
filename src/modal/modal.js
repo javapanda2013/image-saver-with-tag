@@ -167,6 +167,44 @@ function initZoomMonitor() {
 // モーダルUI - 別ウィンドウ版
 
 // ----------------------------------------------------------------
+// ----------------------------------------------------------------
+// v1.46.0 GROUP-57 案 a: history grid サムネを Blob URL 経由で表示する helper。
+// 従来は GET_THUMB_DATA_URL → img.src = dataUrl で、同一 thumbId を参照する N 件の
+// エントリが表示されると structured clone deserialize で N 個の物理コピー（38MB GIF
+// で N=11 → 400MB）が modal の JS zone に retain されていた（memory-report 観察）。
+// Blob URL 経由なら img.src は短い文字列、Blob 本体は IDB 由来 1 件、img.onload 後に
+// revoke すれば decoded image のみ残る。
+// ----------------------------------------------------------------
+function _isGifEntry(entry) {
+  return /\.gif$/i.test(entry?.filename || "");
+}
+
+async function _loadThumbAsBlobUrl(thumbId, mimeFallback) {
+  if (!thumbId) return null;
+  try {
+    const r = await browser.runtime.sendMessage({
+      type:    "GET_THUMB_BINARY",
+      thumbId: thumbId,
+    });
+    if (!r?.ok || !r.buffer) return null;
+    const blob = new Blob([r.buffer], { type: r.mime || mimeFallback || "image/gif" });
+    return URL.createObjectURL(blob);
+  } catch (_) {
+    return null;
+  }
+}
+
+// img に Blob URL を attach し、load/error 時に revoke（decoded image は保持される）
+function _attachBlobUrlToImg(img, blobUrl) {
+  if (!blobUrl) return;
+  img.src = blobUrl;
+  const revoke = () => {
+    try { URL.revokeObjectURL(blobUrl); } catch (_) {}
+  };
+  img.addEventListener("load",  revoke, { once: true });
+  img.addEventListener("error", revoke, { once: true });
+}
+
 // モーダルを開く
 // ----------------------------------------------------------------
 // ウィンドウが最小幅を下回ったら強制リサイズ
@@ -2656,6 +2694,12 @@ function setupModalEvents(
   function renderHistory() {
     const gen = ++_historyRenderGen; // この呼び出しの世代番号を確保
     const list = document.getElementById("history-list");
+    // v1.46.0 GROUP-57 案 b: 再描画前に既存 img の src を null 化＋ load イベント未発火の
+    // blob URL が残っている場合に備えて img.src=""（href 解除でブラウザ内部の参照を断ち、
+    // detached 後の orphan-rooted DOM が dataUrl/blob を retain する経路を弱める）。
+    // load 完了済の img は _attachBlobUrlToImg 内で revoke 済みなのでここでは src 解除のみ。
+    const oldImgs = list.querySelectorAll("img.history-thumb");
+    for (const oldImg of oldImgs) oldImg.src = "";
     list["innerHTML"] = "";
 
     // infobar 更新
@@ -3107,20 +3151,37 @@ function setupModalEvents(
       }
 
       // サムネイル：thumbId → IndexedDB から取得、なければ thumbnailBase64（旧形式）を使用
+      // v1.46.0 GROUP-57 案 a: GIF entries は Blob URL 経由（dataUrl の N コピー retain 回避）。
+      // 非 GIF は従来 dataUrl 経路を維持（小サイズ、cache 互換性のため）。
       if (entry.thumbId) {
-        browser.runtime.sendMessage({ type: "GET_THUMB_DATA_URL", id: entry.thumbId })
-          .then(({ dataUrl }) => {
-            if (!dataUrl) return;
+        if (_isGifEntry(entry)) {
+          _loadThumbAsBlobUrl(entry.thumbId, "image/gif").then(blobUrl => {
+            if (!blobUrl) return;
             const img = document.createElement("img");
             img.className = "history-thumb";
-            img.src   = dataUrl;
             img.alt   = entry.filename;
             img.title = "クリックでプレビュー";
             img.style.cursor = "zoom-in";
             img.addEventListener("click", openPreview);
+            _attachBlobUrlToImg(img, blobUrl);
             item.insertBefore(img, thumbEl);
             thumbEl.style.display = "none";
           }).catch(() => {});
+        } else {
+          browser.runtime.sendMessage({ type: "GET_THUMB_DATA_URL", id: entry.thumbId })
+            .then(({ dataUrl }) => {
+              if (!dataUrl) return;
+              const img = document.createElement("img");
+              img.className = "history-thumb";
+              img.src   = dataUrl;
+              img.alt   = entry.filename;
+              img.title = "クリックでプレビュー";
+              img.style.cursor = "zoom-in";
+              img.addEventListener("click", openPreview);
+              item.insertBefore(img, thumbEl);
+              thumbEl.style.display = "none";
+            }).catch(() => {});
+        }
       } else if (entry.thumbnailBase64) {
         const img = document.createElement("img");
         img.className = "history-thumb";
@@ -3303,13 +3364,23 @@ function setupModalEvents(
         authSugPanel.classList.remove("visible");
         pathInput.value = paths.length > 0 ? paths[0] : "";
         // サムネイル取得→インライン表示
+        // v1.46.0 GROUP-57: GIF は Blob URL 経由で fetch（dataUrl の N コピー retain 回避）
         const thumbImg = item.querySelector(".history-thumb");
         if (thumbImg?.src) {
           infoThumb.src = thumbImg.src; infoThumb.style.display = "";
         } else if (entry.thumbId) {
-          browser.runtime.sendMessage({ type: "GET_THUMB_DATA_URL", id: entry.thumbId })
-            .then(({ dataUrl }) => { if (dataUrl) { infoThumb.src = dataUrl; infoThumb.style.display = ""; } })
-            .catch(() => {});
+          if (_isGifEntry(entry)) {
+            _loadThumbAsBlobUrl(entry.thumbId, "image/gif")
+              .then(blobUrl => {
+                if (!blobUrl) return;
+                _attachBlobUrlToImg(infoThumb, blobUrl);
+                infoThumb.style.display = "";
+              }).catch(() => {});
+          } else {
+            browser.runtime.sendMessage({ type: "GET_THUMB_DATA_URL", id: entry.thumbId })
+              .then(({ dataUrl }) => { if (dataUrl) { infoThumb.src = dataUrl; infoThumb.style.display = ""; } })
+              .catch(() => {});
+          }
         } else if (entry.thumbnailBase64) {
           infoThumb.src = entry.thumbnailBase64; infoThumb.style.display = "";
         }
@@ -6199,14 +6270,35 @@ async function _loadBusyPreview(token) {
     const isFavSource = favs.length > 0;
     const pool = isFavSource ? favs : list;
     const pick = pool[Math.floor(Math.random() * pool.length)];
-    const r = await browser.runtime.sendMessage({ type: "GET_THUMB_DATA_URL", id: pick.thumbId });
-    if (token !== _busyPreviewToken) return;
-    if (_busyState !== "busy" && _busyState !== "done") return;
-    if (r?.dataUrl) {
+    // v1.46.0 GROUP-57: GIF は Blob URL 経由で fetch（busy modal は単発表示だが GIF dataUrl は 38MB+ で
+    // モーダル開閉ごとに retain 蓄積、複数回 busy 発火で乗算）
+    const isGif = _isGifEntry(pick);
+    let imgSrc = null;
+    let blobUrl = null;
+    if (isGif) {
+      blobUrl = await _loadThumbAsBlobUrl(pick.thumbId, "image/gif");
+      imgSrc = blobUrl;
+    } else {
+      const r = await browser.runtime.sendMessage({ type: "GET_THUMB_DATA_URL", id: pick.thumbId });
+      imgSrc = r?.dataUrl || null;
+    }
+    if (token !== _busyPreviewToken) {
+      if (blobUrl) try { URL.revokeObjectURL(blobUrl); } catch (_) {}
+      return;
+    }
+    if (_busyState !== "busy" && _busyState !== "done") {
+      if (blobUrl) try { URL.revokeObjectURL(blobUrl); } catch (_) {}
+      return;
+    }
+    if (imgSrc) {
       const img = document.getElementById("busy-modal-preview");
       const caption = document.getElementById("busy-modal-caption");
       if (img) {
-        img.src = r.dataUrl;
+        if (blobUrl) {
+          _attachBlobUrlToImg(img, blobUrl);
+        } else {
+          img.src = imgSrc;
+        }
         img.style.display = "block";
       }
       if (caption) {

@@ -1920,14 +1920,12 @@ async function getThumbFromIDB(thumbId) {
     });
     if (!result || !result.blob) return null;
 
-    // FileReader は Background では使えないため arrayBuffer + btoa で変換
-    const ab    = await result.blob.arrayBuffer();
-    const bytes = new Uint8Array(ab);
-    let binary  = "";
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    const type  = result.blob.type || "image/jpeg";
-    const dataUrl = `data:${type};base64,` + btoa(binary);
-    _thumbCachePut(thumbId, dataUrl);
+    // GROUP-35-perf-C-2 (v1.46.0): FileReader.readAsDataURL は Background でも利用可能
+    // （v1.30.11 の blobToDataUrl で実証済）。中間 binary 文字列 / btoa 経路を skip し、
+    // ピーク allocation を ~300MB → ほぼゼロに削減（cache miss 時のみ走る副次効果）。
+    // blob.type が空の旧エントリは blobToDataUrl 内で従来 btoa 経路にフォールバック。
+    const dataUrl = await blobToDataUrl(result.blob);
+    if (dataUrl) _thumbCachePut(thumbId, dataUrl);
     return dataUrl;
   } catch (err) {
     addLog("WARN", "IDB サムネイル取得失敗", err.message);

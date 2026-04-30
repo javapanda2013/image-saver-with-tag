@@ -5,6 +5,56 @@
 
 ---
 
+## [1.46.0] - 2026-04-30
+
+### Memory — extension process メモリ retain の根本対策（GROUP-56 + GROUP-57 + GROUP-35-perf-C-2 一括）
+
+#### 経緯
+ユーザー報告（2026-04-30 21:44 Firefox profile + 21:52 memory-report.json）：「保存処理は問題なく出来ているが、GC してもメモリ使用量が数 GB から減らない／設定画面を開くと更に数 GB 伸びる」。memory-report.json 解析で extension process（pid 38556）heap-allocated 2,652 MB を確認。
+
+調査の結果、3 つの独立する retain 経路が判明：
+
+1. **modal.html の orphan-nodes 1,421 MB**：history grid の `GET_THUMB_DATA_URL` → `<img src=dataUrl>` 経路で、同一 thumbId を参照する 11 件のエントリ表示時に structured clone deserialize で 11 個の物理コピー（38 MB GIF × 11 = 400 MB）が JS zone に retain。
+2. **GIF Worker session pool の retain（GROUP-56 既知事案）**：`gif-decoder.worker.js` 内 `decompressFrames` が中間生成する `frame.pixels`（JS Native Array、SpiderMonkey GC tag 1 element ~8 byte）が 6 sessions × 平均 238 MB = 1.4 GB 蓄積。
+3. **`getThumbFromIDB` の btoa 中間 binary 文字列（GROUP-35-perf-C-2）**：cache miss 時に 50 MB 級 Blob → 中間 binary 50 MB ＋ btoa 出力 67 MB ＋ rope 結合 累計 ~300 MB のピーク allocation。
+
+3 GROUP の対策範囲が settings.js / modal.js / worker.js / background.js を横断するため、Q-57-mem-leak-1〜4 で v1.46.0 minor で一括対応する方針確定（c 案）。
+
+#### 実装内容
+
+**GROUP-56 案 A：worker.js `frames.pixels` の null 化**
+- [src/decoders/gif-decoder.worker.js:60-71](src/decoders/gif-decoder.worker.js)：`decompressFrames` 直後に各 `frame.pixels = null`。`renderFrame` は `f.patch` のみ参照するため挙動互換。1 session あたり 200 MB+ 削減見込み
+
+**GROUP-56 案 B：settings.js `_frontDataUrlCache` の GIF skip**
+- [src/settings/settings.js:4776](src/settings/settings.js)：`_frontCachePut` 冒頭で `dataUrl.startsWith("data:image/gif;")` を検出して early return。GIF は GIF Worker session pool 経由で別途 rendering されるため、dataUrl 同期描画パスは元々経路ゼロ
+
+**GROUP-57 案 a：modal.js history grid GIF entries の Blob URL 化**
+- [src/modal/modal.js:170-209](src/modal/modal.js)：`_isGifEntry` / `_loadThumbAsBlobUrl` / `_attachBlobUrlToImg` helper を新設
+- [src/modal/modal.js:3145-3174](src/modal/modal.js)：`_buildHistoryItem` の thumbnail 描画で GIF の場合 `GET_THUMB_BINARY` (ArrayBuffer) → `Blob` → `URL.createObjectURL` → `img.src`、img.onload 後に `URL.revokeObjectURL`
+- 同様の修正：情報編集パネル（line 3372-3389）、busy modal preview（line 6266-6298）
+
+**GROUP-57 案 b：renderHistory 再描画前の cleanup**
+- [src/modal/modal.js:2698-2706](src/modal/modal.js)：`list.innerHTML = ""` の前に `list.querySelectorAll("img.history-thumb")` の `src = ""` で href 解除。detached 後の orphan-rooted DOM が dataUrl/blob を retain する経路を弱める
+
+**GROUP-35-perf-C-2：background.js `getThumbFromIDB` を FileReader 経路に置換**
+- [src/background/background.js:1907-1936](src/background/background.js)：従来の `arrayBuffer + Uint8Array + String.fromCharCode + btoa` 経路を `await blobToDataUrl(result.blob)` に置換。中間 binary 文字列ピーク ~300 MB を skip。`blobToDataUrl` は v1.30.11 で導入済（blob.type 空の旧エントリは btoa fallback）
+
+#### 検証結果
+- node --check：4 ファイル（worker / background / modal / settings）すべて PASS
+- migration-matrix audit saveHistory：leak 0 件
+- 既存挙動互換：非 GIF entries は dataUrl 経路維持、GIF Worker session 描画は patch ベースで挙動変更なし
+
+#### Files Changed
+- `manifest.json`：1.45.6 → 1.46.0
+- `src/decoders/gif-decoder.worker.js`：`handleInit` 内 frames.pixels null 化（7 行追加）
+- `src/background/background.js`：`getThumbFromIDB` を FileReader 経路に置換（5 行短縮）
+- `src/modal/modal.js`：Blob URL helper 追加（37 行）、`_buildHistoryItem` GIF 分岐、情報編集 / busy modal の GIF 対応、renderHistory cleanup（合計 80 行程度）
+- `src/settings/settings.js`：`_frontCachePut` で GIF skip（5 行追加）
+
+#### Native 変更なし
+
+---
+
 ## [1.45.6] - 2026-04-30
 
 ### Fixed — 🚨 重大 hotfix：移送後のインポートが上書きになるバグ（saveHistory 全消失）

@@ -59,6 +59,13 @@ async function handleInit({ id, gifBuffer }) {
 
   if (frames.length === 0) throw new Error("GIF にフレームが含まれていません");
 
+  // GROUP-56 案 A (v1.46.0): patch 生成後の `frame.pixels`（gifuct decompressFrames が
+  // 中間生成する JS Array）は renderFrame で使用しない。SpiderMonkey の Native Array は
+  // 1 element あたり ~8 byte の GC tag を持ち、大型 GIF（600x600 級 × 数十フレーム）で
+  // session 1 件あたり 200MB+ の retain を生じさせていた（postmortem §1〜§5）。
+  // patch のみ保持すれば render 経路に影響なく、6 sessions 構成で 1+GB 削減見込み。
+  for (const f of frames) f.pixels = null;
+
   // 論理画面サイズ（GIF 全体のキャンバスサイズ）
   // gif.lsd は Logical Screen Descriptor。frames[0].dims はサブフレームサイズ
   const canvasWidth  = gif.lsd?.width  || frames[0].dims.width;
