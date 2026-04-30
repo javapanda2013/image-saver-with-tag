@@ -5365,9 +5365,9 @@ function _buildHistCardInner(card, entry, onThumbClick) {
         ${pageUrlHtml}
       </div>
       <div class="${actionsClass}">
-        <button class="hist-card-btn open-folder" title="${escHtml(primary)}">🗂 保存先</button>
-        <button class="hist-card-btn open-file" title="${escHtml(primary ? primary + '\\\\' + entry.filename : '')}">🖼 原寸</button>
-        <button class="hist-card-btn del delete-guarded" title="削除">🗑 削除</button>
+        <button class="hist-card-btn open-folder" title="${escHtml(primary)}">保存先</button>
+        <button class="hist-card-btn open-file" title="${escHtml(primary ? primary + '\\\\' + entry.filename : '')}">原寸</button>
+        <button class="hist-card-btn del delete-guarded" title="削除">削除</button>
       </div>
       <div class="hist-info-editor">
         <div class="hist-info-editor-inner">
@@ -5395,13 +5395,13 @@ function _buildHistCardInner(card, entry, onThumbClick) {
             <div class="hist-info-field-label">📁 保存先情報</div>
             <input type="text" class="hist-path-input" placeholder="保存先パス" />
           </div>
-          <!-- v1.44.0 GROUP-16-a2: 識別情報を貼付して情報流用（v1.44.1 文言統一） -->
+          <!-- v1.44.0 GROUP-16-a2: 識別情報を貼付して情報流用（v1.44.1 文言統一）
+               v1.46.2 GROUP-59-info-edit-button: input + button 横並び → 縦並び（input 上、button 下）。
+               視線移動を圧縮し、絵文字を外して「識別情報反映」テキストに統一（タイル文字のみ化と整合）。 -->
           <div class="hist-info-field-group">
             <div class="hist-info-field-label">📥 識別情報から反映</div>
-            <div style="display:flex;gap:6px;align-items:center;">
-              <input type="text" class="hist-id-paste-input" placeholder="他エントリの識別情報を貼付" autocomplete="off" style="flex:1;font-size:11px;font-family:Consolas,monospace;" />
-              <button class="hist-id-paste-apply hist-card-btn" type="button" title="貼付した識別情報から情報を読み取り、反映対象を選択するダイアログを開く">📥 反映</button>
-            </div>
+            <input type="text" class="hist-id-paste-input" placeholder="他エントリの識別情報を貼付" autocomplete="off" style="width:100%;box-sizing:border-box;font-size:11px;font-family:Consolas,monospace;" />
+            <button class="hist-id-paste-apply hist-card-btn" type="button" title="貼付した識別情報から情報を読み取り、反映対象を選択するダイアログを開く" style="margin-top:6px;">識別情報反映</button>
           </div>
           <div class="hist-info-editor-actions">
             <button class="hist-info-editor-save">💾 保存</button>

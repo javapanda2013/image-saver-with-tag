@@ -5,6 +5,38 @@
 
 ---
 
+## [1.46.2] - 2026-05-01
+
+### Changed — GROUP-59：保存履歴情報編集パネル ＋ 保存履歴タイル UI 調整
+
+#### 経緯
+ユーザー報告（2026-05-01、スクリーンショット 2 枚提示）：
+- 保存履歴情報編集パネルの「📥 反映」ボタンが識別子入力欄の右側に並んでおり、視線移動が大きい
+- 設定画面 保存履歴タブ タイルの「🗂 保存先」がアイコン分の幅を圧迫し見切れている
+
+#### 実装内容
+
+**GROUP-59-info-edit-button：編集パネル内 識別情報反映ボタン位置 ＋ 文字変更**
+- [src/settings/settings.js:5400-5408](src/settings/settings.js:5400)：input + button 横並び flex → input 単独 1 行 + button 単独 1 行（margin-top:6px）。ボタン文字「📥 反映」→「識別情報反映」（絵文字なし）
+- [src/modal/modal.js:3116-3124](src/modal/modal.js:3116)：modal 側も同等の構造変更で settings 側と整合性維持
+
+**GROUP-59-tile-text-only：保存履歴タイル ボタン文字のみ化**
+- [src/settings/settings.js:5368-5370](src/settings/settings.js:5368)：「🗂 保存先」→「保存先」、「🖼 原寸」→「原寸」、「🗑 削除」→「削除」（絵文字削除）
+- modal.js のタイル（保存先・原寸・移動）は user 指示外のため変更なし
+
+#### 検証結果
+- node --check：4 ファイル PASS
+- 既存 selector（`.hist-card-btn.open-folder` / `.open-file` / `.del`、`.hist-id-paste-apply`、`.history-id-paste-apply`）は全て維持、event handler 取得 selector の追従漏れなし
+
+#### Files Changed
+- `manifest.json`：1.46.1 → 1.46.2
+- `src/settings/settings.js`：3 ボタン文字のみ化 ＋ 編集パネル input/button 縦並び化（合計 7 行変更）
+- `src/modal/modal.js`：編集パネル input/button 縦並び化 ＋ ボタン文字変更（5 行変更）
+
+#### Native 変更なし
+
+---
+
 ## [1.46.1] - 2026-05-01
 
 ### Fixed — GROUP-58：保存ウィンドウ起動直後の auto-focus race condition

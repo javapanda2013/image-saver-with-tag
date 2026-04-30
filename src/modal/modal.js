@@ -3113,13 +3113,13 @@ function setupModalEvents(
                 <div class="history-info-field-label">📁 保存先情報</div>
                 <input type="text" class="history-info-path-input" placeholder="保存先パス" />
               </div>
-              <!-- v1.44.0 GROUP-16-a2: 識別情報を貼付して情報流用（v1.44.1 文言統一） -->
+              <!-- v1.44.0 GROUP-16-a2: 識別情報を貼付して情報流用（v1.44.1 文言統一）
+                   v1.46.2 GROUP-59-info-edit-button: input + button 横並び → 縦並び（input 上、button 下）。
+                   settings 側と整合性維持、絵文字を外して「識別情報反映」テキストに統一。 -->
               <div class="history-info-field-group">
                 <div class="history-info-field-label">📥 識別情報から反映</div>
-                <div style="display:flex;gap:6px;align-items:center;">
-                  <input type="text" class="history-id-paste-input" placeholder="他エントリの識別情報を貼付" autocomplete="off" style="flex:1;font-size:11px;font-family:Consolas,monospace;padding:4px;border:1px solid rgba(255,255,255,0.3);background:rgba(0,0,0,0.2);color:#fff;border-radius:4px;" />
-                  <button class="history-id-paste-apply history-btn" type="button" title="貼付した識別情報から情報を読み取り、反映対象を選択するダイアログを開く">📥 反映</button>
-                </div>
+                <input type="text" class="history-id-paste-input" placeholder="他エントリの識別情報を貼付" autocomplete="off" style="width:100%;box-sizing:border-box;font-size:11px;font-family:Consolas,monospace;padding:4px;border:1px solid rgba(255,255,255,0.3);background:rgba(0,0,0,0.2);color:#fff;border-radius:4px;" />
+                <button class="history-id-paste-apply history-btn" type="button" title="貼付した識別情報から情報を読み取り、反映対象を選択するダイアログを開く" style="margin-top:6px;">識別情報反映</button>
               </div>
               <div class="history-info-editor-actions">
                 <button class="history-info-editor-cancel">✕</button>
