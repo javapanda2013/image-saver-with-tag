@@ -5396,17 +5396,22 @@ function _buildHistCardInner(card, entry, onThumbClick) {
             <input type="text" class="hist-path-input" placeholder="保存先パス" />
           </div>
           <!-- v1.44.0 GROUP-16-a2: 識別情報を貼付して情報流用（v1.44.1 文言統一）
-               v1.46.2 GROUP-59-info-edit-button: input + button 横並び → 縦並び（input 上、button 下）。
-               視線移動を圧縮し、絵文字を外して「識別情報反映」テキストに統一（タイル文字のみ化と整合）。 -->
-          <div class="hist-info-field-group">
-            <div class="hist-info-field-label">📥 識別情報から反映</div>
-            <input type="text" class="hist-id-paste-input" placeholder="他エントリの識別情報を貼付" autocomplete="off" style="width:100%;box-sizing:border-box;font-size:11px;font-family:Consolas,monospace;" />
-            <button class="hist-id-paste-apply hist-card-btn" type="button" title="貼付した識別情報から情報を読み取り、反映対象を選択するダイアログを開く" style="margin-top:6px;">識別情報反映</button>
-          </div>
-          <div class="hist-info-editor-actions">
-            <button class="hist-info-editor-save">💾 保存</button>
-            <button class="hist-info-editor-cancel">✕ 閉じる</button>
-            <button class="hist-info-editor-undo" disabled>↩ アンドゥ</button>
+               v1.46.3 GROUP-59-info-edit-button revise: 識別情報ブロックをアクション行と同じ最下段に統合。
+               左側に識別情報（コンパクト幅、入力欄上＋ボタン下）、右側に保存／閉じる／アンドゥを配置。
+               全幅使用を避け、視線移動を圧縮（v1.46.2 で全幅化していた問題の修正）。 -->
+          <div class="hist-info-bottom-row" style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-top:6px;">
+            <div class="hist-info-id-paste-group" style="flex:0 1 auto;min-width:0;max-width:60%;">
+              <div class="hist-info-field-label" style="margin-bottom:2px;">📥 識別情報から反映</div>
+              <input type="text" class="hist-id-paste-input" placeholder="他エントリの識別情報を貼付" autocomplete="off" style="width:200px;max-width:100%;box-sizing:border-box;font-size:11px;font-family:Consolas,monospace;" />
+              <button class="hist-id-paste-apply" type="button" title="貼付した識別情報から情報を読み取り、反映対象を選択するダイアログを開く" style="display:block;margin-top:4px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);border-radius:4px;cursor:pointer;color:#fff;font-size:10px;padding:2px 8px;font-family:inherit;width:200px;max-width:100%;">識別情報反映</button>
+            </div>
+            <!-- v1.46.3 GROUP-59-info-edit-button: bottom-row 統合のみ、ボタン順序は v1.46.2 のまま維持
+                 （ユーザーから順序変更の要望なし、識別情報ボタン関連の要望のみ） -->
+            <div class="hist-info-editor-actions" style="margin-top:0;flex:0 0 auto;">
+              <button class="hist-info-editor-save">💾 保存</button>
+              <button class="hist-info-editor-cancel">✕ 閉じる</button>
+              <button class="hist-info-editor-undo" disabled>↩ アンドゥ</button>
+            </div>
           </div>
         </div>
       </div>

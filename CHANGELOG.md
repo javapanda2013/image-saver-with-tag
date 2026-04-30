@@ -5,6 +5,74 @@
 
 ---
 
+## [1.46.3] - 2026-05-01
+
+### Changed — GROUP-59-fix：編集パネル UI レイアウト是正
+
+#### 経緯
+v1.46.2 で識別情報反映ボタンを縦並びにした結果、編集パネル全体がさらに縦長化。ユーザー報告：「編集パネルの UI 悪化してます。識別情報関連のオブジェクトは下部の左側にまとめて全幅を使用しないで」。
+
+#### 実装内容
+
+**GROUP-59-info-edit-bottom-row：bottom-row 横配置**
+- [src/settings/settings.js:5395-5410](src/settings/settings.js:5395)：「📥 識別情報から反映」label + input + 識別情報反映 button を**下部の左側**にグループ化（max-width:60%、input/button 共に width:200px）。アクションボタン群（💾 保存 / ✕ 閉じる / ↩ アンドゥ）は v1.46.2 順序のまま下部の右側に配置。flex layout で横並び化、全幅利用回避
+- [src/modal/modal.js:3116-3131](src/modal/modal.js:3116)：modal 側も同等の bottom-row 構造（識別情報グループは左、アクションは右）。settings 側との整合性確保
+
+#### 検証結果
+- node --check：modal.js / settings.js PASS
+- v1.46.2 ボタン順序（保存 → 閉じる → アンドゥ）は維持
+
+### Added — GROUP-60：仕様駆動スキルバンドル整備（pattern #19/#20/#21 + scope skills + Tier 1 banner）
+
+#### 経緯
+v1.45.5 saveHistory 全消失事案 / GROUP-57 5 項目違反 / 直近 4 回のヘッダ漏れ違反 を踏まえ、skill バンドルの「対象外を作らない」「違反は再発防止策同梱で報告」「skill 出力切詰めで reminder を見落とさない」を構造化。
+
+#### 実装内容
+
+**Pattern 追加：18 → 21 パターン**
+- [config.yaml:148](`.claude/skills/spec-driven/config.yaml`)：pattern #19（skill バンドル仕様報告）／#20（ユーザー fb 解釈：state report vs feature spec の弁別）／#21（違反行為の報告：再発防止策 Tier 1/2/3 同梱必須）
+- [CLAUDE.md](CLAUDE.md)：21 パターン表へ更新
+
+**spec-cite scope 拡張**
+- [config.yaml](`.claude/skills/spec-driven/config.yaml`)：`scopes.skills: .claude/skills/spec-driven` ＋ `all` に同 path 追加
+- [spec_cite.py:198-203](.claude/skills/spec-driven/spec-cite/spec_cite.py)：argparse choices に `skills` 追加。skill バンドル自身を spec-cite で grep 可能化
+
+**Tier 1 防止策：skill 出力冒頭 banner**
+- [_config.py](`.claude/skills/spec-driven/_config.py`)：共通 helper `emit_next_step_top_banner(pattern_num)` を新設。skill 実行冒頭で 1 行 reminder を print（「⚠️ 送信前必須: workflow-stamp compose --pattern N + scan-response（詳細はフッタ参照）」）
+- 全 11 skill の主要 cmd 冒頭に banner 呼出追加：
+  - `group-id-allocator next` → pattern #2
+  - `question-builder issue` → pattern #3 / `answer` → pattern #4
+  - `spec-cite cite` → pattern #5
+  - `plan-snapshot list` → pattern #7
+  - `spec-linter validate` → pattern #8
+  - `trace-extractor extract` → pattern #12
+  - `trace-linter validate` → pattern #12
+  - `error-triage triage` → pattern #14
+  - `release-flow preflight` → pattern #15 / `uat-checklist` → pattern #17
+  - `migration-matrix audit` → pattern #16
+- skill 出力を `head -N` 等で切詰めても、冒頭 banner / 末尾 footer の両端で reminder を見られる設計
+
+**CLAUDE.md：skill 出力フィルタ禁止ルール追加**
+- [CLAUDE.md:319-329](CLAUDE.md)：「skill 出力フィルタ禁止」節新設。`head -N` / `tail -N` / `| grep ...` で切詰めて読まない、出力長すぎる場合は skill 側に summary subcommand 追加
+
+#### 検証
+- 全 skill の python syntax PASS
+- 各 cmd の banner 出力動作確認（pattern 番号一致）
+
+#### Files Changed
+- `manifest.json`：1.46.2 → 1.46.3
+- `src/settings/settings.js`：bottom-row layout（識別情報グループ + アクション）
+- `src/modal/modal.js`：bottom-row layout（settings と整合）
+- `CLAUDE.md`：21 パターン表 + skill 出力フィルタ禁止節
+- `.claude/skills/spec-driven/_config.py`：`emit_next_step_top_banner` 追加
+- `.claude/skills/spec-driven/config.yaml`：scope `skills` 追加、pattern #19 / #20 / #21 追加
+- `.claude/skills/spec-driven/spec-cite/spec_cite.py`：argparse `skills` choice 追加 + banner
+- `.claude/skills/spec-driven/{group-id-allocator,question-builder,plan-snapshot,spec-linter,trace-extractor,trace-linter,error-triage,release-flow,migration-matrix}/*.py`：banner 呼出追加
+
+#### Native 変更なし
+
+---
+
 ## [1.46.2] - 2026-05-01
 
 ### Changed — GROUP-59：保存履歴情報編集パネル ＋ 保存履歴タイル UI 調整
