@@ -896,7 +896,7 @@ async function setupBackup() {
 }
 
 /**
- * storage.local の全データを JSON ファイルとしてダウンロードする。
+ * storage.local の全データ（＋ サムネイル画像）を ZIP ファイルとしてダウンロードする。
  * exportPath が設定されていて exportAutoSave が ON の場合は Native 経由で保存。
  * diffExportEnabled が ON の場合は前回エクスポート以降の差分エントリのみを対象にする。
  */
@@ -1301,7 +1301,7 @@ ${name}
 }
 
 /**
- * JSONファイルを読み込み、既存データとマージして storage.local に保存する。
+ * ZIP ファイル（または旧バージョンの JSON ファイル）を読み込み、既存データとマージして storage.local に保存する。
  * 上書きではなく追記マージなので、既存データは失われない。
  */
 async function importData(e) {

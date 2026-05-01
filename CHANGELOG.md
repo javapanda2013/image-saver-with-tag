@@ -5,6 +5,38 @@
 
 ---
 
+## [1.46.12] - 2026-05-02
+
+### Fixed — GROUP-70：エクスポート／インポートボタンのラベルを「JSONファイル」→「ZIPファイル」に修正
+
+#### 経緯
+ユーザー報告（2026-05-02）：「インポート・エクスポートボタンの文字が JSON のままだが、現状の出力は JSON を内包した ZIP なので要修正」。
+
+#### 根本原因
+過去（GROUP-26-split / v1.30.0）に export 形式を JSON 単体から「JSON + サムネイル画像を内包する ZIP」へ変更した際、`settings.js:991` の `zipName` は `.zip` 拡張子で出力するよう更新されたが、ボタン表示文字列が「JSONファイル保存」「JSONファイル読み込み」のまま据え置かれていた。
+
+#### 修正内容
+- `src/settings/settings.html:957-959`：
+  - 「⬇ エクスポート（JSONファイル保存）」→「⬇ エクスポート（ZIPファイル保存）」
+  - 「⬆ インポート（JSONファイル読み込み）」→「⬆ インポート（ZIPファイル読み込み）」
+  - `<input type="file" accept=".json,.zip">` は据え置き（旧バージョンの JSON エクスポートも import 可能な後方互換）
+- `src/settings/settings.js`：
+  - 899 行：exportData 関数 doc comment を「JSON ファイル」→「ZIP ファイル（＋ サムネイル画像）」に修正
+  - 1304 行：importData 関数 doc comment を「JSONファイル」→「ZIP ファイル（または旧バージョンの JSON ファイル）」に修正
+
+#### 検証
+- node --check：settings.js PASS
+- HTML 文字列のみの修正、ロジック変更なし
+
+#### Files Changed
+- `manifest.json`：1.46.11 → 1.46.12
+- `src/settings/settings.html`：2 ボタンラベル修正
+- `src/settings/settings.js`：2 doc comment 修正
+
+#### Native 変更なし
+
+---
+
 ## [1.46.11] - 2026-05-02
 
 ### Fixed — GROUP-69：連続保存時のタグ→保存先関連付け消失（read-modify-write race）
