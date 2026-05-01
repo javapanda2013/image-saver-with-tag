@@ -5,6 +5,36 @@
 
 ---
 
+## [1.46.9] - 2026-05-01
+
+### Fixed — GROUP-68：保存ウィンドウ 引き継ぎ設定 OFF 時の入力欄クリアを廃止（リセットボタン専用化）
+
+#### 経緯
+ユーザー報告（2026-05-01）：「保存ウィンドウで引き継ぎ設定をオフにした際に、入力欄がクリアされてしまう。リセットボタン以外でのクリアは望ましくないので修正」。
+
+#### 根本原因
+modal.js:5203-5231 の retain チェックボックス change handler が、OFF にした瞬間に入力欄を強制クリアしていた：
+- retainTag OFF → tag chip 全削除 + tagInput.value = "" + hideSuggestions
+- retainSubTag OFF → subtag chip 全削除 + subTagInput.value = ""
+- retainAuthor OFF → selectedAuthors = [] + renderAuthorChips
+
+「引き継ぎ OFF」の意味は「次回保存後に retainedTags/Authors を上書きしない」が本来仕様。「OFF にした瞬間に現在の入力もクリア」は過剰な副作用。
+
+#### 修正内容
+- [src/modal/modal.js:5203-5217](src/modal/modal.js:5203)：3 つの change handler から OFF 時クリア block（合計 14 行）を削除。各 handler は「state 更新 + storage 永続化」のみに簡素化
+- リセットボタン（`btn-retain-reset`、line 5234-5260）は明示的リセット用途として保持（クリック時のみ全 OFF + クリア + storage 永続化）
+
+#### 検証
+- node --check：modal.js PASS
+
+#### Files Changed
+- `manifest.json`：1.46.8 → 1.46.9
+- `src/modal/modal.js`：3 handler から OFF 時クリア block 削除（14 行削除、コメント 3 行追加）
+
+#### Native 変更なし
+
+---
+
 ## [1.46.8] - 2026-05-01
 
 ### Fixed — GROUP-67：保存履歴フィルター 4 要素の永続化と初期表示反映（双子 UI 修正）

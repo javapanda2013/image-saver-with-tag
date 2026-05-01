@@ -5200,34 +5200,20 @@ function setupModalEvents(
   chkRetainSubtag.checked = retainSubTag;
   chkRetainAuthor.checked = retainAuthor;
 
+  // v1.46.9 GROUP-68：引き継ぎチェックボックスの OFF 時自動クリアを廃止。
+  // 「引き継ぎ OFF」の意味は「次回保存後に retainedTags/Authors を上書きしない」であり、
+  // 「OFF にした瞬間に現在の入力もクリア」は過剰な副作用。明示的リセットは btn-retain-reset 専用。
   chkRetainTag.addEventListener("change", () => {
     retainTag = chkRetainTag.checked;
     browser.storage.local.set({ retainTag });
-    // OFF にした瞬間に入力欄をクリア（v1.26.6: chip は各 area 内に配置）
-    if (!retainTag) {
-      selectedTags.length = 0;
-      document.getElementById("dest-tabbar-tag-area").querySelectorAll('.tag-chip[data-type="main"]').forEach(c => c.remove());
-      tagInput.value = "";
-      hideSuggestions();
-    }
   });
   chkRetainSubtag.addEventListener("change", () => {
     retainSubTag = chkRetainSubtag.checked;
     browser.storage.local.set({ retainSubTag });
-    if (!retainSubTag) {
-      selectedSubTags.length = 0;
-      document.getElementById("dest-tabbar-subtag-area").querySelectorAll('.tag-chip[data-type="sub"]').forEach(c => c.remove());
-      subTagInput.value = "";
-      hideSubSuggestions();
-    }
   });
   chkRetainAuthor.addEventListener("change", () => {
     retainAuthor = chkRetainAuthor.checked;
     browser.storage.local.set({ retainAuthor });
-    if (!retainAuthor) {
-      selectedAuthors = [];
-      renderAuthorChips();
-    }
   });
 
   // 引き継ぎリセットボタン：チェックを全OFF + 現在の入力・保存済み引き継ぎ値をクリア
