@@ -2064,6 +2064,30 @@ function setupModalEvents(
   // v1.32.2 GROUP-28 mvdl：GIF のみ → プルダウン化
   // "all" | "gif" | "audio"
   let historyFormatFilter = "all";
+  // v1.46.8 GROUP-67：保存履歴フィルター 3 要素（filter mode / format filter / fav toggle）の永続値を初期化時に読込
+  // settings.js と共有 storage key を使用、Firefox bfcache の visual restore による状態乖離を解消
+  browser.storage.local.get(["histFilterMode", "histFormatFilter", "histFavFilter"]).then(r => {
+    if (typeof r.histFilterMode === "string") {
+      historyFilterMode = r.histFilterMode;
+      const sel = document.getElementById("history-filter-mode");
+      if (sel) sel.value = historyFilterMode;
+    }
+    if (typeof r.histFormatFilter === "string") {
+      historyFormatFilter = r.histFormatFilter;
+      const sel = document.getElementById("history-format-filter");
+      if (sel) sel.value = historyFormatFilter;
+    }
+    if (typeof r.histFavFilter === "boolean") {
+      _modalHistFavFilter = r.histFavFilter;
+      const btn = document.getElementById("history-fav-filter-toggle");
+      if (btn) {
+        btn.setAttribute("aria-pressed", _modalHistFavFilter ? "true" : "false");
+        btn.textContent = _modalHistFavFilter ? "❤️ お気に入りのみ" : "🤍 お気に入りのみ";
+      }
+    }
+    // 既に初期 render 済の可能性があるため再描画
+    if (typeof renderHistory === "function") renderHistory();
+  }).catch(() => {});
   let _historyRenderGen = 0; // renderHistory() の世代番号（非同期競合による二重描画防止）
 
   // v1.32.2 GROUP-28 mvdl：保存ウィンドウの保存履歴にも音声再生機構
@@ -2559,6 +2583,8 @@ function setupModalEvents(
   if (historyFilterModeSelect) {
     historyFilterModeSelect.addEventListener("change", () => {
       historyFilterMode = historyFilterModeSelect.value;
+      // v1.46.8 GROUP-67：永続化（settings.js と共有 storage key）
+      browser.storage.local.set({ histFilterMode: historyFilterMode }).catch(() => {});
       _histPage = 0;
       renderHistory();
     });
@@ -2569,6 +2595,8 @@ function setupModalEvents(
   if (historyFormatFilterSelect) {
     historyFormatFilterSelect.addEventListener("change", (e) => {
       historyFormatFilter = e.target.value || "all";
+      // v1.46.8 GROUP-67：永続化
+      browser.storage.local.set({ histFormatFilter: historyFormatFilter }).catch(() => {});
       _histPage = 0;
       renderHistory();
     });
@@ -2587,6 +2615,8 @@ function setupModalEvents(
   if (historyFavFilterBtn) {
     historyFavFilterBtn.addEventListener("click", () => {
       _modalHistFavFilter = !_modalHistFavFilter;
+      // v1.46.8 GROUP-67：永続化
+      browser.storage.local.set({ histFavFilter: _modalHistFavFilter }).catch(() => {});
       historyFavFilterBtn.setAttribute("aria-pressed", _modalHistFavFilter ? "true" : "false");
       historyFavFilterBtn.textContent = _modalHistFavFilter ? "❤️ お気に入りのみ" : "🤍 お気に入りのみ";
       _histPage = 0;

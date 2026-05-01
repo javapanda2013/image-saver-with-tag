@@ -5,6 +5,49 @@
 
 ---
 
+## [1.46.8] - 2026-05-01
+
+### Fixed — GROUP-67：保存履歴フィルター 4 要素の永続化と初期表示反映（双子 UI 修正）
+
+#### 経緯
+ユーザー報告（2026-05-01、screenshot 添付）：「保存履歴画面のプルダウン類、選択値が記憶されているが、初期表示には反映されていない」。例として「音声付き」が dropdown に表示されているのに、画像一覧は全形式表示されている状態。
+
+#### 根本原因
+- Firefox の bfcache（form-restoration）が `<select>` の visual value を session 跨ぎで保持
+- 一方、JS 側の状態変数（`_histFormatFilter` 等）は code 上 default で起動（`"all"` / `"or"` / `false`）
+- change event は発火しないため visual value と JS state が乖離 → filter が適用されない
+
+#### 影響範囲（spec-cite で双子 UI 両方 grep）
+| 要素 | settings.js | modal.js |
+|---|---|---|
+| filter mode (and/or) | `hist-filter-mode` / `_histFilterMode` (default "or") | `history-filter-mode` / `historyFilterMode` (default "and") |
+| format filter | `hist-format-filter` / `_histFormatFilter` (default "all") | `history-format-filter` / `historyFormatFilter` (default "all") |
+| source filter | `hist-source-filter` / `_histSourceFilter` (default "") | （無し） |
+| fav filter toggle | `hist-fav-filter-toggle` / `_histFavFilter` (default false) | `history-fav-filter-toggle` / `_modalHistFavFilter` (default false) |
+
+#### 実装内容（pattern #22 双子 UI 改修ルール適用）
+
+**settings.js（4 要素永続化 + 初期表示反映）**
+- [src/settings/settings.js:3525-3559](src/settings/settings.js:3525)：`renderHistoryTab` 冒頭で `histFilterMode` / `histFormatFilter` / `histSourceFilter` / `histFavFilter` を `browser.storage.local.get` で取得、JS state 変数 + 対応 dropdown.value + fav button の aria-pressed/textContent/style に反映
+- [src/settings/settings.js:2401](src/settings/settings.js:2401) / [3441-3447](src/settings/settings.js:3441) / [3450-3456](src/settings/settings.js:3450) / [3461-3473](src/settings/settings.js:3461)：4 つの change/click handler に `browser.storage.local.set({...})` を追加で永続化
+
+**modal.js（3 要素永続化 + 初期表示反映、settings.js と共有 storage key）**
+- [src/modal/modal.js:2067-2090](src/modal/modal.js:2067)：state 変数定義直後に `browser.storage.local.get(["histFilterMode","histFormatFilter","histFavFilter"])` で読込、JS state ＋ dropdown.value ＋ fav button の aria/textContent に反映、初期 render との競合防止のため `renderHistory()` 再呼出
+- [src/modal/modal.js:2585-2592](src/modal/modal.js:2585) / [2597-2606](src/modal/modal.js:2597) / [2615-2625](src/modal/modal.js:2615)：3 つの handler に永続化追加
+
+#### 検証
+- node --check：settings.js / modal.js / background.js PASS
+- delta-audit hist-info-editor：leak 0 件継続（編集パネル別件で影響なし）
+
+#### Files Changed
+- `manifest.json`：1.46.7 → 1.46.8
+- `src/settings/settings.js`：renderHistoryTab に 30 行追加、4 handler に save 各 1 行追加
+- `src/modal/modal.js`：state 定義直後に 24 行追加、3 handler に save 各 1 行追加
+
+#### Native 変更なし
+
+---
+
 ## [1.46.7] - 2026-05-01
 
 ### Fixed — GROUP-54：一括音声 ON 時の ReferenceError: showBusyModal is not defined

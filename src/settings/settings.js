@@ -2399,6 +2399,8 @@ function setupHistoryTab() {
   if (filterModeSelect) {
     filterModeSelect.addEventListener("change", () => {
       _histFilterMode = filterModeSelect.value;
+      // v1.46.8 GROUP-67：永続化（次回起動時に bfcache でなく storage 由来の値を反映）
+      browser.storage.local.set({ histFilterMode: _histFilterMode }).catch(() => {});
       _histPage = 0;
       if (_histFilterTagChips.length || _histFilterAuthorChips.length) renderHistoryGrid();
     });
@@ -3440,6 +3442,8 @@ function setupHistoryTab() {
   if (sourceFilterSelect) {
     sourceFilterSelect.addEventListener("change", () => {
       _histSourceFilter = sourceFilterSelect.value;
+      // v1.46.8 GROUP-67：永続化
+      browser.storage.local.set({ histSourceFilter: _histSourceFilter }).catch(() => {});
       _histPage = 0;
       updateSelectAllBtn();
       renderHistoryGrid();
@@ -3449,6 +3453,8 @@ function setupHistoryTab() {
   // v1.32.2：形式フィルター（GIF のみ → プルダウン化、音声付き追加）
   document.getElementById("hist-format-filter")?.addEventListener("change", (e) => {
     _histFormatFilter = e.target.value || "all";
+    // v1.46.8 GROUP-67：永続化
+    browser.storage.local.set({ histFormatFilter: _histFormatFilter }).catch(() => {});
     _histPage = 0;
     updateSelectAllBtn();
     renderHistoryGrid();
@@ -3457,6 +3463,8 @@ function setupHistoryTab() {
   // v1.37.0 GROUP-36-fav-filter：お気に入りのみ表示する独立トグル
   document.getElementById("hist-fav-filter-toggle")?.addEventListener("click", (e) => {
     _histFavFilter = !_histFavFilter;
+    // v1.46.8 GROUP-67：永続化
+    browser.storage.local.set({ histFavFilter: _histFavFilter }).catch(() => {});
     const btn = e.currentTarget;
     btn.setAttribute("aria-pressed", _histFavFilter ? "true" : "false");
     btn.textContent = _histFavFilter ? "❤️ お気に入りのみ" : "🤍 お気に入りのみ";
@@ -3522,12 +3530,39 @@ function setupHistoryTab() {
 async function renderHistoryTab() {
   // v1.45.5 Phase C-2: saveHistory は migration aware
   const _hist = await _readSaveHistory();
-  const stored = { saveHistory: _hist, ...(await browser.storage.local.get(["settingsHistoryPageSize"])) };
+  const stored = { saveHistory: _hist, ...(await browser.storage.local.get([
+    "settingsHistoryPageSize",
+    // v1.46.8 GROUP-67：保存履歴フィルター 4 要素の永続値も同時取得
+    "histFilterMode", "histFormatFilter", "histSourceFilter", "histFavFilter",
+  ])) };
   _historyData  = stored.saveHistory              || [];
   _histPageSize = stored.settingsHistoryPageSize  || 100;
   // セレクトの値も同期
   const sel = document.getElementById("hist-page-size-select");
   if (sel) sel.value = String(_histPageSize);
+
+  // v1.46.8 GROUP-67：保存履歴フィルター 4 要素の永続値を JS state ＋ DOM へ反映
+  // Firefox bfcache が <select> visual value を session 跨ぎで保持する一方、JS 側 default で
+  // 起動するため visual と機能の乖離が発生していた問題を解消。
+  if (typeof stored.histFilterMode === "string") _histFilterMode = stored.histFilterMode;
+  if (typeof stored.histFormatFilter === "string") _histFormatFilter = stored.histFormatFilter;
+  if (typeof stored.histSourceFilter === "string") _histSourceFilter = stored.histSourceFilter;
+  if (typeof stored.histFavFilter === "boolean") _histFavFilter = stored.histFavFilter;
+  const filterModeSelEl = document.getElementById("hist-filter-mode");
+  if (filterModeSelEl) filterModeSelEl.value = _histFilterMode;
+  const formatFilterSelEl = document.getElementById("hist-format-filter");
+  if (formatFilterSelEl) formatFilterSelEl.value = _histFormatFilter;
+  const sourceFilterSelEl = document.getElementById("hist-source-filter");
+  if (sourceFilterSelEl) sourceFilterSelEl.value = _histSourceFilter;
+  const favFilterBtnEl = document.getElementById("hist-fav-filter-toggle");
+  if (favFilterBtnEl) {
+    favFilterBtnEl.setAttribute("aria-pressed", _histFavFilter ? "true" : "false");
+    favFilterBtnEl.textContent = _histFavFilter ? "❤️ お気に入りのみ" : "🤍 お気に入りのみ";
+    favFilterBtnEl.style.background  = _histFavFilter ? "rgba(220,40,80,0.85)" : "#fff";
+    favFilterBtnEl.style.color       = _histFavFilter ? "#fff" : "#444";
+    favFilterBtnEl.style.borderColor = _histFavFilter ? "rgba(220,40,80,0.85)" : "#dde";
+  }
+
   _histSelected.clear();
 
   // 容量表示
