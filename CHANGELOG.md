@@ -5,6 +5,51 @@
 
 ---
 
+## [1.46.11] - 2026-05-02
+
+### Fixed — GROUP-69：連続保存時のタグ→保存先関連付け消失（read-modify-write race）
+
+#### 経緯
+ユーザー報告（2026-05-02）：「保存後にタグと保存先の関連付けが出来ていないパターンが確認される。保存処理完了前に連続で画像を保存している影響ではないか再確認」。前回（v1.46.10 以前）の調査では「影響なし」と返答していたが、実コードを再度詳細に追ったところ race 経路が確認できた。
+
+#### 根本原因
+`handleSave` / `handleSaveMulti` の入口（Native I/O 前）で `tagDestinations` を read し、Native I/O 完了後の末尾で merge 結果を write back する read-modify-write 構造。read と write の間に Native I/O（数秒オーダー）が挟まるため、連続保存時に後発の write が先発の更新を上書きする lost update が発生する。
+
+`saveHistory` の race window（`addSaveHistoryMulti` 内のサムネ処理時間、ms オーダー）と比べ、`tagDestinations` の race window が桁違いに長いため、ユーザー報告の「保存履歴は残るが関連付けだけ失敗」という症状を説明できる。
+
+#### 修正方針
+v1.25.4 BUG-ext-thumb-stats-race の前例（`_extStatsMutex`）に倣い、storage R-M-W 部分のみを Promise チェーン mutex で直列化する **tight mutex** を導入。Native I/O は並列のままなので連続保存のスループットは現状維持、storage R-M-W（数十 ms）だけが直列化される。
+
+#### 修正内容
+- `src/background/background.js`：
+  - `_saveStorageMutex` ＋ `_withSaveStorageMutex` helper 新設（`_extStatsMutex` 直下）
+  - `handleSave` 末尾の `_tagStored.get` → merge → `addSaveHistory` を `_withSaveStorageMutex` で wrap
+  - `handleSaveMulti` 末尾の同等ブロックも wrap
+  - `handleInstantSave` 末尾の同等ブロックも wrap（`globalTags` / `recentTags` / `recentSubTags` の race も解消）
+  - `setTagDestinations` 全体を wrap（settings 画面の保存先一覧編集が save in-flight に上書きされない）
+  - `recordTagDestination` 全体を wrap（legacy API、modal「保存先候補に追加」ボタン等から呼ばれる経路）
+  - `updateHistoryEntryTags` 全体を wrap（保存履歴のタグ編集が save と競合しない）
+  - `updateHistoryEntry` 全体を wrap（タグ／作者／保存先パス編集が save と競合しない）
+  - `generateMissingThumbs` 末尾の `_setStorageWithHistoryMirror` を wrap（fresh saveHistory を re-read し、本ループで更新した entry の thumbId / thumbWidth / thumbHeight だけを id 一致で merge して書き戻す。並列保存で entry が増えていても fresh を base にするので保存履歴は失われない）
+
+#### パフォーマンス影響
+- 1 件保存の latency：変化なし（Native I/O は並列維持）
+- 5 件連続保存の wall-time：~3s（変化なし、Native I/O は並列のまま、storage R-M-W だけ直列化で合計 100〜300ms 増程度）
+- メモリピーク：mutex 内のみで `_tagStored` snapshot を保持 → 並列分の retain が減少
+- UI 応答性：mutex chain は event-driven 処理を block しないため影響なし
+
+#### 検証
+- node --check：background.js PASS
+- 既存 mutex 前例（`_extStatsMutex`）と同パターンで実装、`.catch()` で chain を死なせない設計
+
+#### Files Changed
+- `manifest.json`：1.46.10 → 1.46.11
+- `src/background/background.js`：`_saveStorageMutex` helper ＋ 8 箇所の R-M-W block wrap
+
+#### Native 変更なし
+
+---
+
 ## [1.46.10] - 2026-05-02
 
 ### Added / Changed — GROUP-22 / GROUP-21：保存履歴のフィルター UI 整理＋編集パネル box 統合（双子 UI 修正）

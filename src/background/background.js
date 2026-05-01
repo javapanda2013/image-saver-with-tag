@@ -918,22 +918,7 @@ async function handleSave(payload) {
       }
     }
 
-    // v1.41.7 hznhv3 C-β：globalTags / recentTags / tagDestinations の個別 set を廃止し、
-    // 値計算結果を _extraStorage にまとめて addSaveHistory の最終 set にマージ。
-    // 1 保存あたりの broadcast 発火が 4+ 回 → 1 回（GROUP-35-perf-A の正面対策）。
-    const _tagStored = await browser.storage.local.get(["globalTags", "recentTags", "tagDestinations"]);
-    const _extra = { lastSaveDir: savePath };
-    if (allTags.length > 0) {
-      _extra.globalTags = _mergeGlobalTags(_tagStored.globalTags, allTags);
-    }
-    if (tags && tags.length > 0) {
-      _extra.recentTags = _mergeRecentTags(_tagStored.recentTags, tags, 100);
-    }
-    if (tags && tags.length > 0 && !skipTagRecord) {
-      _extra.tagDestinations = _mergeTagDestinations(_tagStored.tagDestinations, tags, savePath);
-    }
-
-    // サムネイル優先度:
+    // サムネイル優先度（mutex 外で OK：mutex 内 R-M-W に渡す引数の用意のみ）:
     // ① content側（DOM img / fetch）→ ② Python側（ダウンロード済みデータを再利用）→ ③ background XHR
     if (res.thumbError) {
       addLog("WARN", "サムネイル生成失敗 (Pillow未インストールの可能性)", res.thumbError);
@@ -947,25 +932,44 @@ async function handleSave(payload) {
     const effectiveThumbW = (thumbBlob || thumbDataUrl) ? thumbWidth  : (pyThumb?.width  || null);
     const effectiveThumbH = (thumbBlob || thumbDataUrl) ? thumbHeight : (pyThumb?.height || null);
 
-    await addSaveHistory({
-      imageUrl,
-      // v1.31.10：Native 側 unique_path による自動リネーム後の実ファイル名を記録
-      filename: actualSavedFilename,
-      savePath, tags: allTags, authors: resolvedAuthors, pageUrl,
-      thumbBlob:    effectiveThumbBlob,
-      thumbDataUrl: effectiveThumbDataUrl,
-      thumbWidth:   effectiveThumbW,
-      thumbHeight:  effectiveThumbH,
-      sessionId:    sessionId    || null,
-      sessionIndex: sessionIndex || null,
-      // v1.31.4 GROUP-28 mvdl：関連音声メタ（v1.31.10：Native 実保存名を反映）
-      audioFilename: actualAudioFilename,
-      audioMimeType:    (associatedAudio && associatedAudio.mimeType) || null,
-      audioDurationSec: (associatedAudio && associatedAudio.durationSec) || null,
-      _extraStorage: _extra,
-    });
+    // v1.46.11 GROUP-69：storage R-M-W を mutex で直列化（tight mutex）
+    // 並列保存時の lost update（特に tagDestinations 関連付けの消失）を防ぐ。
+    // Native I/O は既に完了済み、ここでは tagStored 取得 → merge → addSaveHistory までを atomic に実行。
+    return await _withSaveStorageMutex(async () => {
+      // v1.41.7 hznhv3 C-β：globalTags / recentTags / tagDestinations の個別 set を廃止し、
+      // 値計算結果を _extraStorage にまとめて addSaveHistory の最終 set にマージ。
+      const _tagStored = await browser.storage.local.get(["globalTags", "recentTags", "tagDestinations"]);
+      const _extra = { lastSaveDir: savePath };
+      if (allTags.length > 0) {
+        _extra.globalTags = _mergeGlobalTags(_tagStored.globalTags, allTags);
+      }
+      if (tags && tags.length > 0) {
+        _extra.recentTags = _mergeRecentTags(_tagStored.recentTags, tags, 100);
+      }
+      if (tags && tags.length > 0 && !skipTagRecord) {
+        _extra.tagDestinations = _mergeTagDestinations(_tagStored.tagDestinations, tags, savePath);
+      }
 
-    return { success: true };
+      await addSaveHistory({
+        imageUrl,
+        // v1.31.10：Native 側 unique_path による自動リネーム後の実ファイル名を記録
+        filename: actualSavedFilename,
+        savePath, tags: allTags, authors: resolvedAuthors, pageUrl,
+        thumbBlob:    effectiveThumbBlob,
+        thumbDataUrl: effectiveThumbDataUrl,
+        thumbWidth:   effectiveThumbW,
+        thumbHeight:  effectiveThumbH,
+        sessionId:    sessionId    || null,
+        sessionIndex: sessionIndex || null,
+        // v1.31.4 GROUP-28 mvdl：関連音声メタ（v1.31.10：Native 実保存名を反映）
+        audioFilename: actualAudioFilename,
+        audioMimeType:    (associatedAudio && associatedAudio.mimeType) || null,
+        audioDurationSec: (associatedAudio && associatedAudio.durationSec) || null,
+        _extraStorage: _extra,
+      });
+
+      return { success: true };
+    });
   } catch (err) {
     addLog("ERROR", `保存失敗: ${fullPath}`, err.message);
     return { success: false, error: err.message };
@@ -1179,10 +1183,14 @@ async function getTagDestinations() {
 
 /**
  * タグ別保存先マップ全体を上書き保存する（設定画面から呼ばれる）。
+ * v1.46.11 GROUP-69：保存処理 in-flight 中に上書きすると save 側 stale snapshot の
+ * write-back で本関数の更新が消える race を防ぐため、_saveStorageMutex で直列化。
  */
 async function setTagDestinations(data) {
-  await browser.storage.local.set({ tagDestinations: data });
-  return { ok: true };
+  return _withSaveStorageMutex(async () => {
+    await browser.storage.local.set({ tagDestinations: data });
+    return { ok: true };
+  });
 }
 
 /**
@@ -1191,25 +1199,28 @@ async function setTagDestinations(data) {
  * 同じパスが既に登録済みの場合はスキップ（重複しない）。
  */
 async function recordTagDestination(tags, savePath) {
-  const stored = await browser.storage.local.get("tagDestinations");
-  const dest = stored.tagDestinations || {};
+  // v1.46.11 GROUP-69：read-modify-write を save 側と同 mutex で直列化
+  return _withSaveStorageMutex(async () => {
+    const stored = await browser.storage.local.get("tagDestinations");
+    const dest = stored.tagDestinations || {};
 
-  const normalizedSavePath = normalizePath(savePath);
-  for (const tag of tags) {
-    if (!dest[tag]) dest[tag] = [];
-    // パス末尾の \ や \\ 連続の差で重複登録されないよう、正規化して比較する
-    const alreadyExists = dest[tag].some((d) => normalizePath(d.path) === normalizedSavePath);
-    if (!alreadyExists) {
-      dest[tag].push({
-        id:    crypto.randomUUID(),
-        path:  savePath,
-        label: "", // ラベルは設定画面で後から付けられる
-      });
+    const normalizedSavePath = normalizePath(savePath);
+    for (const tag of tags) {
+      if (!dest[tag]) dest[tag] = [];
+      // パス末尾の \ や \\ 連続の差で重複登録されないよう、正規化して比較する
+      const alreadyExists = dest[tag].some((d) => normalizePath(d.path) === normalizedSavePath);
+      if (!alreadyExists) {
+        dest[tag].push({
+          id:    crypto.randomUUID(),
+          path:  savePath,
+          label: "", // ラベルは設定画面で後から付けられる
+        });
+      }
     }
-  }
 
-  await browser.storage.local.set({ tagDestinations: dest });
-  return { ok: true };
+    await browser.storage.local.set({ tagDestinations: dest });
+    return { ok: true };
+  });
 }
 
 // ----------------------------------------------------------------
@@ -1286,22 +1297,7 @@ async function handleInstantSave(imageUrl, pageUrl) {
     }
     if (!res.ok) return { success: false, error: res.error };
 
-    // v1.41.7 hznhv3 C-β：lastSaveDir / globalTags / recentTags / recentSubTags / continuousSession の
-    // 個別 set を廃止し、_extraStorage にまとめて addSaveHistory の最終 set にマージ。
-    const _tagStored = await browser.storage.local.get(["globalTags", "recentTags", "recentSubTags"]);
-    const _extra = { lastSaveDir: savePath };
-    if (allTags.length > 0) {
-      _extra.globalTags = _mergeGlobalTags(_tagStored.globalTags, allTags);
-      if (tags.length > 0) _extra.recentTags = _mergeRecentTags(_tagStored.recentTags, tags, 100);
-      if (subTags.length > 0) _extra.recentSubTags = _mergeRecentSubTags(_tagStored.recentSubTags, subTags, 20);
-    }
-    // セッション更新も同 set にマージ（即保存中の連続保存セッション継続）
-    if (session) {
-      session.count = (session.count || 0) + 1;
-      _extra.continuousSession = session;
-    }
-
-    // Python側が返すサムネイルデータを使用（通常保存と同じ処理）
+    // Python側が返すサムネイルデータを使用（通常保存と同じ処理、mutex 外で OK）
     if (res.thumbError) {
       addLog("WARN", "即保存: サムネイル生成失敗 (Pillow未インストールの可能性)", res.thumbError);
     }
@@ -1311,17 +1307,35 @@ async function handleInstantSave(imageUrl, pageUrl) {
     const thumbWidth   = pyThumb?.width   || null;
     const thumbHeight  = pyThumb?.height  || null;
 
-    // 履歴に追加（authors も addSaveHistory 内で merge＋集約 set）
-    await addSaveHistory({
-      imageUrl, filename: effectiveFilenameInstant, savePath, tags: allTags, authors, pageUrl,
-      thumbDataUrl, thumbWidth, thumbHeight,
-      sessionId: session?.id || null,
-      sessionIndex: session ? session.count : null,
-      _extraStorage: _extra,
-    });
+    // v1.46.11 GROUP-69：storage R-M-W を mutex で直列化（tight mutex）
+    return await _withSaveStorageMutex(async () => {
+      // v1.41.7 hznhv3 C-β：lastSaveDir / globalTags / recentTags / recentSubTags / continuousSession の
+      // 個別 set を廃止し、_extraStorage にまとめて addSaveHistory の最終 set にマージ。
+      const _tagStored = await browser.storage.local.get(["globalTags", "recentTags", "recentSubTags"]);
+      const _extra = { lastSaveDir: savePath };
+      if (allTags.length > 0) {
+        _extra.globalTags = _mergeGlobalTags(_tagStored.globalTags, allTags);
+        if (tags.length > 0) _extra.recentTags = _mergeRecentTags(_tagStored.recentTags, tags, 100);
+        if (subTags.length > 0) _extra.recentSubTags = _mergeRecentSubTags(_tagStored.recentSubTags, subTags, 20);
+      }
+      // セッション更新も同 set にマージ（即保存中の連続保存セッション継続）
+      if (session) {
+        session.count = (session.count || 0) + 1;
+        _extra.continuousSession = session;
+      }
 
-    addLog("INFO", `即保存: ${fullPath}`);
-    return { success: true };
+      // 履歴に追加（authors も addSaveHistory 内で merge＋集約 set）
+      await addSaveHistory({
+        imageUrl, filename: effectiveFilenameInstant, savePath, tags: allTags, authors, pageUrl,
+        thumbDataUrl, thumbWidth, thumbHeight,
+        sessionId: session?.id || null,
+        sessionIndex: session ? session.count : null,
+        _extraStorage: _extra,
+      });
+
+      addLog("INFO", `即保存: ${fullPath}`);
+      return { success: true };
+    });
   } catch (err) {
     addLog("ERROR", `即保存失敗: ${err.message}`);
     return { success: false, error: err.message };
@@ -1427,33 +1441,39 @@ async function getSaveHistory() {
 // @spec 02_詳細設計書.md#1-6
 async function updateHistoryEntryTags(id, newTags) {
   if (!id || !Array.isArray(newTags)) return { ok: false };
-  // v1.45.5 Phase C-2: migration aware read
-  const history = await _readSaveHistory();
-  const idx     = history.findIndex(e => e.id === id);
-  if (idx === -1) return { ok: false };
-  history[idx]  = { ...history[idx], tags: newTags };
-  await _setStorageWithHistoryMirror({ saveHistory: history });
-  return { ok: true };
+  // v1.46.11 GROUP-69：saveHistory R-M-W を save 側と同 mutex で直列化
+  return _withSaveStorageMutex(async () => {
+    // v1.45.5 Phase C-2: migration aware read
+    const history = await _readSaveHistory();
+    const idx     = history.findIndex(e => e.id === id);
+    if (idx === -1) return { ok: false };
+    history[idx]  = { ...history[idx], tags: newTags };
+    await _setStorageWithHistoryMirror({ saveHistory: history });
+    return { ok: true };
+  });
 }
 
 async function updateHistoryEntry(id, newTags, newAuthors, newSavePaths) {
   if (!id) return { ok: false };
-  // v1.45.5 Phase C-2: saveHistory は migration aware、他 key は storage.local
-  const history = await _readSaveHistory();
-  const stored  = await browser.storage.local.get(["globalTags", "globalAuthors"]);
-  const idx     = history.findIndex(e => e.id === id);
-  if (idx === -1) return { ok: false };
-  if (Array.isArray(newTags))      history[idx].tags      = newTags;
-  if (Array.isArray(newAuthors))   { history[idx].authors = newAuthors; delete history[idx].author; }
-  if (Array.isArray(newSavePaths)) history[idx].savePaths  = newSavePaths;
-  const gTagSet    = new Set([...(stored.globalTags    || []), ...(newTags    || [])]);
-  const gAuthorSet = new Set([...(stored.globalAuthors || []), ...(newAuthors || [])]);
-  await _setStorageWithHistoryMirror({
-    saveHistory:   history,
-    globalTags:    [...gTagSet],
-    globalAuthors: [...gAuthorSet],
+  // v1.46.11 GROUP-69：saveHistory + globalTags + globalAuthors の R-M-W を同 mutex で直列化
+  return _withSaveStorageMutex(async () => {
+    // v1.45.5 Phase C-2: saveHistory は migration aware、他 key は storage.local
+    const history = await _readSaveHistory();
+    const stored  = await browser.storage.local.get(["globalTags", "globalAuthors"]);
+    const idx     = history.findIndex(e => e.id === id);
+    if (idx === -1) return { ok: false };
+    if (Array.isArray(newTags))      history[idx].tags      = newTags;
+    if (Array.isArray(newAuthors))   { history[idx].authors = newAuthors; delete history[idx].author; }
+    if (Array.isArray(newSavePaths)) history[idx].savePaths  = newSavePaths;
+    const gTagSet    = new Set([...(stored.globalTags    || []), ...(newTags    || [])]);
+    const gAuthorSet = new Set([...(stored.globalAuthors || []), ...(newAuthors || [])]);
+    await _setStorageWithHistoryMirror({
+      saveHistory:   history,
+      globalTags:    [...gTagSet],
+      globalAuthors: [...gAuthorSet],
+    });
+    return { ok: true };
   });
-  return { ok: true };
 }
 
 // ----------------------------------------------------------------
@@ -2183,6 +2203,28 @@ async function _blobToDataUrl(blob) {
 //   mutex（Promise チェーン）で serialize することで解消する。
 let _extStatsMutex = Promise.resolve();
 
+// v1.46.11 GROUP-69：保存処理の storage R-M-W mutex（tight mutex）
+// 連続保存で handleSave / handleSaveMulti / handleInstantSave が並列実行されると、
+// 入口で読んだ tagDestinations / globalTags / saveHistory snapshot に基づいて
+// merge 結果を最後に書き戻す read-modify-write が競合し、後発の write が先発の更新を
+// 上書きする lost update が発生する。特に tagDestinations の race window は Native I/O
+// 時間（数秒オーダー）に渡るため、ユーザー報告の「保存履歴は残るが関連付けが失敗する」
+// 症状の原因。
+//   設計：Native I/O（時間支配的）は並列のまま、storage R-M-W ブロック（数十 ms）だけを
+//         直列化する tight mutex。前例：_extStatsMutex（v1.25.4）。
+//   保護対象 key：saveHistory / tagDestinations / globalTags / globalAuthors /
+//                recentTags / recentSubTags / recentAuthors / lastSaveDir /
+//                continuousSession（同 _setStorageWithHistoryMirror 系）
+let _saveStorageMutex = Promise.resolve();
+function _withSaveStorageMutex(fn) {
+  const next = _saveStorageMutex.then(fn);
+  // mutex chain は失敗で止めない（次保存が永久に block されないように）
+  _saveStorageMutex = next.catch((err) => {
+    try { addLog("WARN", "_saveStorageMutex 内エラー（chain は継続）", err?.message || String(err)); } catch (_) {}
+  });
+  return next;
+}
+
 /** storage.local.externalImportThumbStats を {count, bytes} で差分更新（mutex で serialize） */
 function _updateExtStats(rootPath, deltaCount, deltaBytes) {
   if (!rootPath) return Promise.resolve();
@@ -2441,7 +2483,23 @@ async function generateMissingThumbs(targetIds = null, overwrite = false) {
   }
 
   if (changed) {
-    await _setStorageWithHistoryMirror({ saveHistory: history });
+    // v1.46.11 GROUP-69：mutex 内で fresh saveHistory を再 read し、本ループで更新した
+    // entry の thumbId / thumbWidth / thumbHeight だけを id 一致で merge して書き戻す。
+    // 並列保存で entry が増えていても fresh を base にするので保存履歴は失われない。
+    const updates = new Map();
+    for (const e of history) {
+      if (e && e.id) {
+        updates.set(e.id, { thumbId: e.thumbId, thumbWidth: e.thumbWidth, thumbHeight: e.thumbHeight });
+      }
+    }
+    await _withSaveStorageMutex(async () => {
+      const fresh = await _readSaveHistory();
+      for (let i = 0; i < fresh.length; i++) {
+        const u = updates.get(fresh[i].id);
+        if (u) fresh[i] = { ...fresh[i], ...u };
+      }
+      await _setStorageWithHistoryMirror({ saveHistory: fresh });
+    });
   }
 
   addLog("INFO", `サムネイル生成完了: ${generated}件成功 / ${failed}件失敗 / ${skipped}件スキップ`);
@@ -2567,40 +2625,43 @@ async function handleSaveMulti(payload) {
     const effectiveThumbW = (thumbBlob || thumbDataUrl) ? thumbWidth  : (pyThumbData?.w || null);
     const effectiveThumbH = (thumbBlob || thumbDataUrl) ? thumbHeight : (pyThumbData?.h || null);
 
-    // v1.41.7 hznhv3 C-β：lastSaveDir / globalTags / recentTags / tagDestinations を集約して 1 回 set
-    const _tagStored = await browser.storage.local.get(["globalTags", "recentTags", "tagDestinations"]);
-    const _extra = { lastSaveDir: successPaths[successPaths.length - 1] };
-    if (allTags.length > 0) {
-      _extra.globalTags = _mergeGlobalTags(_tagStored.globalTags, allTags);
-    }
-    if (tags && tags.length > 0) {
-      _extra.recentTags = _mergeRecentTags(_tagStored.recentTags, tags, 100);
-    }
-    if (tags && tags.length > 0 && !skipTagRecord) {
-      // 各成功 savePath に対して順に merge（pure 関数なので連鎖適用で OK）
-      let mergedDest = _tagStored.tagDestinations;
-      for (const sp of successPaths) {
-        mergedDest = _mergeTagDestinations(mergedDest, tags, sp);
+    // v1.46.11 GROUP-69：storage R-M-W を mutex で直列化（tight mutex）
+    await _withSaveStorageMutex(async () => {
+      // v1.41.7 hznhv3 C-β：lastSaveDir / globalTags / recentTags / tagDestinations を集約して 1 回 set
+      const _tagStored = await browser.storage.local.get(["globalTags", "recentTags", "tagDestinations"]);
+      const _extra = { lastSaveDir: successPaths[successPaths.length - 1] };
+      if (allTags.length > 0) {
+        _extra.globalTags = _mergeGlobalTags(_tagStored.globalTags, allTags);
       }
-      _extra.tagDestinations = mergedDest;
-    }
+      if (tags && tags.length > 0) {
+        _extra.recentTags = _mergeRecentTags(_tagStored.recentTags, tags, 100);
+      }
+      if (tags && tags.length > 0 && !skipTagRecord) {
+        // 各成功 savePath に対して順に merge（pure 関数なので連鎖適用で OK）
+        let mergedDest = _tagStored.tagDestinations;
+        for (const sp of successPaths) {
+          mergedDest = _mergeTagDestinations(mergedDest, tags, sp);
+        }
+        _extra.tagDestinations = mergedDest;
+      }
 
-    await addSaveHistoryMulti({
-      imageUrl,
-      // v1.31.10：Native 側 unique_path による自動リネーム後の実ファイル名を記録
-      filename: firstActualSavedFilename || effectiveFilenameMulti,
-      savePaths: successPaths, tags: allTags, authors: resolvedAuthorsMulti, pageUrl,
-      thumbBlob:    effectiveThumbBlob,
-      thumbDataUrl: effectiveThumbDataUrl,
-      thumbWidth:   effectiveThumbW,
-      thumbHeight:  effectiveThumbH,
-      sessionId:    sessionId    || null,
-      sessionIndex: sessionIndex || null,
-      // v1.31.4 GROUP-28 mvdl / v1.31.10：Native 実保存名を反映
-      audioFilename:    firstActualAudioFilename,
-      audioMimeType:    (associatedAudio && associatedAudio.mimeType) || null,
-      audioDurationSec: (associatedAudio && associatedAudio.durationSec) || null,
-      _extraStorage: _extra,
+      await addSaveHistoryMulti({
+        imageUrl,
+        // v1.31.10：Native 側 unique_path による自動リネーム後の実ファイル名を記録
+        filename: firstActualSavedFilename || effectiveFilenameMulti,
+        savePaths: successPaths, tags: allTags, authors: resolvedAuthorsMulti, pageUrl,
+        thumbBlob:    effectiveThumbBlob,
+        thumbDataUrl: effectiveThumbDataUrl,
+        thumbWidth:   effectiveThumbW,
+        thumbHeight:  effectiveThumbH,
+        sessionId:    sessionId    || null,
+        sessionIndex: sessionIndex || null,
+        // v1.31.4 GROUP-28 mvdl / v1.31.10：Native 実保存名を反映
+        audioFilename:    firstActualAudioFilename,
+        audioMimeType:    (associatedAudio && associatedAudio.mimeType) || null,
+        audioDurationSec: (associatedAudio && associatedAudio.durationSec) || null,
+        _extraStorage: _extra,
+      });
     });
   }
 
