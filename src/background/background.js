@@ -1805,6 +1805,13 @@ async function _mirrorSaveHistoryToIDB(history) {
 // @spec 02_詳細設計書.md#1-6
 async function _setStorageWithHistoryMirror(setObj) {
   if (!setObj || typeof setObj !== "object") return;
+  // v1.46.14 Phase C-3 (Q-35-2=b)：差分通知用に書込前 saveHistory snapshot を保持
+  // re-read してから書込み、書込後に id ベース diff を計算して HISTORY_ENTRY_ADDED/UPDATED/DELETED を emit
+  let _phaseC3PrevHistory = null;
+  if (Array.isArray(setObj.saveHistory)) {
+    try { _phaseC3PrevHistory = await _readSaveHistory(); }
+    catch (_) { _phaseC3PrevHistory = []; }
+  }
   const status = await browser.storage.local.get("saveHistoryMigrationStatus");
   const migrated = status.saveHistoryMigrationStatus === "migrated";
   if (migrated) {
@@ -1822,6 +1829,50 @@ async function _setStorageWithHistoryMirror(setObj) {
       try { await _mirrorSaveHistoryToIDB(setObj.saveHistory); }
       catch (err) { console.warn("[Phase C-1] saveHistory IDB mirror 失敗", err); }
     }
+  }
+  // v1.46.14 Phase C-3：書込後に diff を計算して emit
+  if (_phaseC3PrevHistory !== null && Array.isArray(setObj.saveHistory)) {
+    _emitSaveHistoryDiff(_phaseC3PrevHistory, setObj.saveHistory);
+  }
+}
+
+// v1.46.14 GROUP-35-perf-A Phase C-3 (Q-35-2=b, Q-35-3=b)：
+// 書込前 prevHistory と書込後 newHistory を id 一致で diff 計算し、
+// HISTORY_ENTRY_ADDED / HISTORY_ENTRY_UPDATED / HISTORY_ENTRY_DELETED を runtime.sendMessage で emit。
+// payload は {type, id, senderId} のみ（数十 byte）、受信側は通知 id を元に IDB から該当 entry を再取得して DOM 更新。
+// UPDATED 検出は JSON 内容比較（reference 比較は cross-context で常に異なるため不可）。
+// senderId は自 context の emit を listener で skip するため。
+const _phaseC3SenderId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `bg-${Date.now()}-${Math.random()}`;
+function _emitSaveHistoryDiff(prevHistory, newHistory) {
+  try {
+    const prevMap = new Map();
+    for (const e of prevHistory) if (e && e.id) prevMap.set(e.id, e);
+    const newMap = new Map();
+    for (const e of newHistory) if (e && e.id) newMap.set(e.id, e);
+    // ADDED
+    for (const id of newMap.keys()) {
+      if (!prevMap.has(id)) {
+        try { browser.runtime.sendMessage({ type: "HISTORY_ENTRY_ADDED", id, senderId: _phaseC3SenderId }).catch(() => {}); } catch (_) {}
+      }
+    }
+    // UPDATED（JSON 比較で内容差分を検出）
+    for (const [id, newEntry] of newMap) {
+      const prevEntry = prevMap.get(id);
+      if (!prevEntry) continue;
+      let changed = false;
+      try { changed = JSON.stringify(prevEntry) !== JSON.stringify(newEntry); } catch (_) { changed = true; }
+      if (changed) {
+        try { browser.runtime.sendMessage({ type: "HISTORY_ENTRY_UPDATED", id, senderId: _phaseC3SenderId }).catch(() => {}); } catch (_) {}
+      }
+    }
+    // DELETED
+    for (const id of prevMap.keys()) {
+      if (!newMap.has(id)) {
+        try { browser.runtime.sendMessage({ type: "HISTORY_ENTRY_DELETED", id, senderId: _phaseC3SenderId }).catch(() => {}); } catch (_) {}
+      }
+    }
+  } catch (err) {
+    console.warn("[Phase C-3] _emitSaveHistoryDiff 失敗", err);
   }
 }
 

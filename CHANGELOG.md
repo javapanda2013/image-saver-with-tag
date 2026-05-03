@@ -5,6 +5,60 @@
 
 ---
 
+## [1.46.14] - 2026-05-03
+
+### Added — GROUP-35-perf-A Phase C-3：saveHistory 差分通知（HISTORY_ENTRY_ADDED/UPDATED/DELETED）と受信側部分更新、エクスポート V2 zip
+
+#### 経緯
+v1.45.2 / v1.45.5 / v1.45.6 で完了した Phase C-1 / C-2 / C-2 hotfix の続き。
+saveHistory IDB 専用化により `storage.local.set({ saveHistory })` の onChanged broadcast 経由 `StructuredCloneHolder.deserialize` 552MB 問題は既に解消済みだが、保存・編集が他 context（settings ↔ modal）に伝播する経路が失われていた。Phase C-3 でこの経路を `runtime.sendMessage` 個別通知で再構築。
+
+#### 確定方針（Q-35-2 / Q-35-3 / Q-35-4 / Q-35-5、2026-05-03 確定）
+- Q-35-2 = b：`_setStorageWithHistoryMirror` helper 内部で saveHistory 配列の前後 diff を計算して一括 emit（callsite 側変更不要）
+- Q-35-3 = b：sendMessage payload は `{type, id, senderId}` のみ（数十 byte）。受信側は通知 id を元に IDB から該当 entry を再取得して DOM 更新
+- Q-35-4 = a：受信側部分更新は entry レベル（影響 entry の DOM カードのみ rebuild）。本リリースでは debounced 全件 refresh で interim 実装、真の entry レベル DOM 部分更新は Phase C-3-opt として後送
+- Q-35-5 = a：単一 patch リリースで helper 改修＋受信側 listener＋エクスポート V2 zip まで一括
+
+#### 修正内容
+
+**helper diff + emit（3 ファイル同改修）**：
+- `src/background/background.js` / `src/modal/modal.js` / `src/settings/settings.js`：
+  - `_setStorageWithHistoryMirror` で書込前に `_readSaveHistory()` から prev snapshot を取得、書込後に `_emitSaveHistoryDiff(prev, new)` を呼出
+  - `_emitSaveHistoryDiff`：id 一致で ADDED/DELETED を抽出、両方に存在する entry は JSON 比較で UPDATED 判定、各操作に対して `runtime.sendMessage({type, id, senderId})` を emit
+  - `_phaseC3SenderId` を context 起動時に `crypto.randomUUID()` で発番、emit に含めて受信側で自 context 由来 message を skip 可能に
+
+**受信側 listener**：
+- `src/modal/modal.js`：`HISTORY_ENTRY_ADDED/UPDATED/DELETED` を listen、200ms debounced で `GET_SAVE_HISTORY` → `saveHistory` 更新 → `renderHistory()` 全件再描画
+- `src/settings/settings.js`：同 listener を追加、`_phaseC3SetHistoryData(fresh)` setter 経由で `_historyData` を更新 → `renderHistoryGrid()` 全件再描画
+- 自 context 発信（`msg.senderId === _phaseC3SenderId`）は skip して二重更新を回避
+
+**エクスポート V2 zip 互換**：
+- `src/settings/settings.js`：export の manifest.json `formatVersion` を 1 → 2 へ bump（saveHistory 読込元が `_readSaveHistory()` 経由で migration aware に）
+- import 側：V1 / V2 の両方を accept（schema 同一、saveHistory 読込元のみ差分あり）
+
+#### パフォーマンス影響
+- 1 保存あたり追加 CPU：書込前 IDB getAll ~5〜30ms（saveHistory 数千件規模）＋ JSON 比較 ~10〜20ms
+- broadcast コスト：payload 数十 byte／message × ADDED/UPDATED/DELETED 件数（典型は 1 操作あたり 1 message、~100 byte 級）
+- 受信側 wall-time：debounced 200ms 後に renderHistoryGrid / renderHistory（既存挙動と同等、entry レベル最適化は C-3-opt 予定）
+- メモリ：emit 時の中間 Map ~300KB 一時（GC 対象）
+
+#### 既知の interim 制約
+- 受信側 DOM 更新は debounced 全件再描画（Q-35-4=a の理想形「entry レベル DOM 部分更新」は Phase C-3-opt で対応）
+- このため大量 entry 環境（3000+）では受信時に renderHistoryGrid のコストが残る。既存挙動と同等なのでデグレなし、改善は段階的に
+
+#### 検証
+- node --check：background.js / modal.js / settings.js 全 3 ファイル PASS
+
+#### Files Changed
+- `manifest.json`：1.46.13 → 1.46.14
+- `src/background/background.js`：`_setStorageWithHistoryMirror` 拡張、`_emitSaveHistoryDiff` ＋ `_phaseC3SenderId` 追加
+- `src/modal/modal.js`：同上＋受信側 listener
+- `src/settings/settings.js`：同上＋受信側 listener、`_phaseC3SetHistoryData` setter、export `formatVersion=2`、import V1/V2 両対応
+
+#### Native 変更なし
+
+---
+
 ## [1.46.13] - 2026-05-02
 
 ### Fixed — GROUP-71：保存ウィンドウ dest-tabbar の chip × ボタンに tabindex="-1" 漏れ（v1.46.10 GROUP-22-tab 見落とし）

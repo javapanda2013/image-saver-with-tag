@@ -53,6 +53,12 @@ async function _mirrorSaveHistoryToIDB(history) {
 
 async function _setStorageWithHistoryMirror(setObj) {
   if (!setObj || typeof setObj !== "object") return;
+  // v1.46.14 Phase C-3 (Q-35-2=b)：差分通知用に書込前 saveHistory snapshot を保持
+  let _phaseC3PrevHistory = null;
+  if (Array.isArray(setObj.saveHistory)) {
+    try { _phaseC3PrevHistory = await _readSaveHistory(); }
+    catch (_) { _phaseC3PrevHistory = []; }
+  }
   // v1.45.5 Phase C-2: migration 状態に応じて write 経路を分岐
   const status = await browser.storage.local.get("saveHistoryMigrationStatus");
   const migrated = status.saveHistoryMigrationStatus === "migrated";
@@ -72,7 +78,74 @@ async function _setStorageWithHistoryMirror(setObj) {
       catch (err) { console.warn("[Phase C-1] saveHistory IDB mirror 失敗", err); }
     }
   }
+  // v1.46.14 Phase C-3：書込後に diff を計算して emit
+  if (_phaseC3PrevHistory !== null && Array.isArray(setObj.saveHistory)) {
+    _emitSaveHistoryDiff(_phaseC3PrevHistory, setObj.saveHistory);
+  }
 }
+
+// v1.46.14 GROUP-35-perf-A Phase C-3 (Q-35-2=b, Q-35-3=b)：
+// 書込前 prevHistory と書込後 newHistory を id 一致で diff 計算し、
+// HISTORY_ENTRY_ADDED / HISTORY_ENTRY_UPDATED / HISTORY_ENTRY_DELETED を runtime.sendMessage で emit。
+const _phaseC3SenderId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `modal-${Date.now()}-${Math.random()}`;
+function _emitSaveHistoryDiff(prevHistory, newHistory) {
+  try {
+    const prevMap = new Map();
+    for (const e of prevHistory) if (e && e.id) prevMap.set(e.id, e);
+    const newMap = new Map();
+    for (const e of newHistory) if (e && e.id) newMap.set(e.id, e);
+    for (const id of newMap.keys()) {
+      if (!prevMap.has(id)) {
+        try { browser.runtime.sendMessage({ type: "HISTORY_ENTRY_ADDED", id, senderId: _phaseC3SenderId }).catch(() => {}); } catch (_) {}
+      }
+    }
+    for (const [id, newEntry] of newMap) {
+      const prevEntry = prevMap.get(id);
+      if (!prevEntry) continue;
+      let changed = false;
+      try { changed = JSON.stringify(prevEntry) !== JSON.stringify(newEntry); } catch (_) { changed = true; }
+      if (changed) {
+        try { browser.runtime.sendMessage({ type: "HISTORY_ENTRY_UPDATED", id, senderId: _phaseC3SenderId }).catch(() => {}); } catch (_) {}
+      }
+    }
+    for (const id of prevMap.keys()) {
+      if (!newMap.has(id)) {
+        try { browser.runtime.sendMessage({ type: "HISTORY_ENTRY_DELETED", id, senderId: _phaseC3SenderId }).catch(() => {}); } catch (_) {}
+      }
+    }
+  } catch (err) {
+    console.warn("[Phase C-3] _emitSaveHistoryDiff 失敗", err);
+  }
+}
+
+// v1.46.14 Phase C-3：受信側 listener。HISTORY_ENTRY_ADDED/UPDATED/DELETED を受けて
+// 保存履歴 DOM を debounced refresh（modal.js は renderHistory で全件再描画、
+// 真の entry レベル DOM 部分更新は Phase C-3-opt で対応予定）。
+let _phaseC3HistoryRefreshTimer = null;
+function _phaseC3ScheduleHistoryRefresh() {
+  if (_phaseC3HistoryRefreshTimer) return;
+  _phaseC3HistoryRefreshTimer = setTimeout(async () => {
+    _phaseC3HistoryRefreshTimer = null;
+    try {
+      if (typeof browser !== "undefined" && browser.runtime) {
+        const r = await browser.runtime.sendMessage({ type: "GET_SAVE_HISTORY" });
+        if (r && Array.isArray(r.saveHistory)) {
+          saveHistory = r.saveHistory;
+          if (typeof renderHistory === "function") renderHistory();
+        }
+      }
+    } catch (err) {
+      console.warn("[Phase C-3] modal history refresh failed", err);
+    }
+  }, 200);
+}
+browser.runtime.onMessage.addListener((msg) => {
+  if (!msg || typeof msg !== "object") return;
+  if (msg.senderId === _phaseC3SenderId) return; // 自 context emit は skip
+  if (msg.type === "HISTORY_ENTRY_ADDED" || msg.type === "HISTORY_ENTRY_UPDATED" || msg.type === "HISTORY_ENTRY_DELETED") {
+    _phaseC3ScheduleHistoryRefresh();
+  }
+});
 
 // v1.45.5 Phase C-2: saveHistory 読込 helper
 async function _readSaveHistory() {
