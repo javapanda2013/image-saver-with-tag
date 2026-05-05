@@ -119,19 +119,28 @@ function _emitSaveHistoryDiff(prevHistory, newHistory) {
 }
 
 // v1.46.14 Phase C-3：受信側 listener。HISTORY_ENTRY_ADDED/UPDATED/DELETED を受けて
-// 保存履歴 DOM を debounced refresh（modal.js は renderHistory で全件再描画、
-// 真の entry レベル DOM 部分更新は Phase C-3-opt で対応予定）。
+// 保存履歴 DOM を debounced refresh。
+// v1.46.15 GROUP-72 Phase C-3-opt：targetIds を debounce window で coalesce、
+// 発火時に renderHistory に渡して smart reuse を強制 rebuild させる。
 let _phaseC3HistoryRefreshTimer = null;
-function _phaseC3ScheduleHistoryRefresh() {
+let _phaseC3PendingIds = new Set();
+function _phaseC3ScheduleHistoryRefresh(targetId) {
+  if (targetId) _phaseC3PendingIds.add(targetId);
   if (_phaseC3HistoryRefreshTimer) return;
   _phaseC3HistoryRefreshTimer = setTimeout(async () => {
     _phaseC3HistoryRefreshTimer = null;
+    const ids = new Set(_phaseC3PendingIds);
+    _phaseC3PendingIds.clear();
     try {
       if (typeof browser !== "undefined" && browser.runtime) {
         const r = await browser.runtime.sendMessage({ type: "GET_SAVE_HISTORY" });
         if (r && Array.isArray(r.saveHistory)) {
           saveHistory = r.saveHistory;
+          // v1.46.15 GROUP-72：targetIds を window 経由で renderHistory へ伝達
+          // （renderHistory 内で smart reuse の force rebuild Set として利用）
+          window.__phaseC3OptForceRebuildIds = ids;
           if (typeof renderHistory === "function") renderHistory();
+          window.__phaseC3OptForceRebuildIds = null;
         }
       }
     } catch (err) {
@@ -143,7 +152,7 @@ browser.runtime.onMessage.addListener((msg) => {
   if (!msg || typeof msg !== "object") return;
   if (msg.senderId === _phaseC3SenderId) return; // 自 context emit は skip
   if (msg.type === "HISTORY_ENTRY_ADDED" || msg.type === "HISTORY_ENTRY_UPDATED" || msg.type === "HISTORY_ENTRY_DELETED") {
-    _phaseC3ScheduleHistoryRefresh();
+    _phaseC3ScheduleHistoryRefresh(msg.id);
   }
 });
 
@@ -2850,13 +2859,28 @@ function setupModalEvents(
   function renderHistory() {
     const gen = ++_historyRenderGen; // この呼び出しの世代番号を確保
     const list = document.getElementById("history-list");
+    // v1.46.15 GROUP-72 Phase C-3-opt：smart reuse モード判定。
+    // window.__phaseC3OptForceRebuildIds が Set ならそれを force rebuild 対象として smart reuse。
+    // 未指定なら従来通りの全削除＋再構築（filter / page / 表示モード変更時の安全策）。
+    const forceRebuildIds = (typeof window !== "undefined" && window.__phaseC3OptForceRebuildIds instanceof Set)
+      ? window.__phaseC3OptForceRebuildIds
+      : null;
     // v1.46.0 GROUP-57 案 b: 再描画前に既存 img の src を null 化＋ load イベント未発火の
     // blob URL が残っている場合に備えて img.src=""（href 解除でブラウザ内部の参照を断ち、
     // detached 後の orphan-rooted DOM が dataUrl/blob を retain する経路を弱める）。
     // load 完了済の img は _attachBlobUrlToImg 内で revoke 済みなのでここでは src 解除のみ。
-    const oldImgs = list.querySelectorAll("img.history-thumb");
-    for (const oldImg of oldImgs) oldImg.src = "";
-    list["innerHTML"] = "";
+    if (!forceRebuildIds) {
+      // 全削除パス：従来通り
+      const oldImgs = list.querySelectorAll("img.history-thumb");
+      for (const oldImg of oldImgs) oldImg.src = "";
+      list["innerHTML"] = "";
+    } else {
+      // smart reuse パス：force rebuild 対象 entry の img のみ src 解除（他は再利用）
+      for (const id of forceRebuildIds) {
+        const el = list.querySelector(`.history-item[data-entry-id="${CSS.escape(id)}"] img.history-thumb`);
+        if (el) el.src = "";
+      }
+    }
 
     // infobar 更新
     const countEl   = document.getElementById("history-count");
@@ -2946,11 +2970,21 @@ function setupModalEvents(
       // 古い世代の呼び出しは描画しない（二重描画防止）
       if (gen !== _historyRenderGen) return;
       const mode = historyDisplayMode || "normal";
-      // v1.26.2: 初期 6 件同期描画＋残りは requestIdleCallback で裏描画
-      _renderHistoryChunked(list, pageSlice, mode, gen);
+      // v1.46.15 GROUP-72 Phase C-3-opt：smart reuse モード（通常モードのみ対応、
+      // group モードは既存の chunked パスへ fallback）
+      if (forceRebuildIds && mode === "normal") {
+        _renderHistoryItemsReuse(list, pageSlice, forceRebuildIds);
+      } else {
+        // v1.26.2: 初期 6 件同期描画＋残りは requestIdleCallback で裏描画
+        _renderHistoryChunked(list, pageSlice, mode, gen);
+      }
     }).catch(() => {
       if (gen !== _historyRenderGen) return;
-      _renderHistoryChunked(list, pageSlice, "normal", gen);
+      if (forceRebuildIds) {
+        _renderHistoryItemsReuse(list, pageSlice, forceRebuildIds);
+      } else {
+        _renderHistoryChunked(list, pageSlice, "normal", gen);
+      }
     });
 
     // v1.33.0 GROUP-32-b：音声一括トグルボタンの状態更新
@@ -3119,6 +3153,68 @@ function setupModalEvents(
     }
   }
 
+  // v1.46.15 GROUP-72 Phase C-3-opt：保存履歴アイテムの smart reuse 描画。
+  // 既存 history-item を data-entry-id でインデックス化、thumbId 一致 ＋ targetIds 非該当の
+  // entry は DOM 再利用、それ以外は作り直し。settings.js _renderHistoryGridNormalReuse 同等の
+  // パターン。
+  // forceRebuildIds: Phase C-3 listener から渡される、強制 rebuild 対象の entry id Set。
+  // 同じ id でも targetIds に含まれる entry は内容変更があるため必ず作り直す（タグ/作者更新が
+  // 反映されるよう）。
+  function _renderHistoryItemsReuse(list, pageSlice, forceRebuildIds) {
+    const force = forceRebuildIds instanceof Set ? forceRebuildIds : new Set();
+    // 既存 history-item を entry id でインデックス化
+    const existing = new Map();
+    for (const el of Array.from(list.children)) {
+      if (el.classList && el.classList.contains("history-item") && el.dataset && el.dataset.entryId) {
+        existing.set(el.dataset.entryId, el);
+      }
+    }
+    // history-item 以外（hist-empty 等）は破棄
+    const others = Array.from(list.children).filter(el =>
+      !(el.classList && el.classList.contains("history-item") && el.dataset && el.dataset.entryId)
+    );
+    for (const el of others) el.remove();
+
+    let prev = null;
+    for (const entry of pageSlice) {
+      const ex = existing.get(entry.id);
+      const sameThumb = ex && (ex.dataset.thumbId || "") === (entry.thumbId || "");
+      const mustRebuild = force.has(entry.id);
+      if (ex && sameThumb && !mustRebuild) {
+        // 既存タイル再利用：選択状態・チェックボックスのみ同期
+        const isSel = _modalHistSelected.has(entry.id);
+        ex.classList.toggle("selected", isSel);
+        const cb = ex.querySelector(".history-select-box");
+        if (cb) cb.checked = isSel;
+        // 順序を pageSlice に合わせる
+        if (prev) {
+          if (prev.nextSibling !== ex) list.insertBefore(ex, prev.nextSibling);
+        } else {
+          if (list.firstChild !== ex) list.insertBefore(ex, list.firstChild);
+        }
+        prev = ex;
+        existing.delete(entry.id);
+      } else {
+        // 新規 or thumbId 不一致 or force rebuild 対象：作り直し
+        if (ex) {
+          ex.remove();
+          existing.delete(entry.id);
+        }
+        const newItem = _buildHistoryItem(entry, [entry], pageSlice);
+        if (prev) {
+          list.insertBefore(newItem, prev.nextSibling);
+        } else {
+          list.insertBefore(newItem, list.firstChild);
+        }
+        prev = newItem;
+      }
+    }
+    // 余った既存タイルは DOM 除去
+    for (const orphan of existing.values()) {
+      orphan.remove();
+    }
+  }
+
   /** v1.26.2: 残り件数を requestIdleCallback（なければ setTimeout 0）で段階的に描画。
    *  各 chunk 実行前に _historyRenderGen を照合し、変わっていたら中断する。 */
   function _scheduleHistoryBgRender(gen, units, renderUnit) {
@@ -3147,6 +3243,8 @@ function setupModalEvents(
       item.className = "history-item";
       // v1.39.1 GROUP-42-b：fav-filter drop 等での単一タイル除去用に entry id を保持
       item.dataset.entryId = entry.id;
+      // v1.46.15 GROUP-72 Phase C-3-opt：smart reuse 用 thumbId 識別子（settings.js _renderHistoryGridNormalReuse 同等）
+      if (entry.thumbId) item.dataset.thumbId = entry.thumbId;
 
       // savePaths（配列）か savePath（旧形式）を正規化
       const paths = Array.isArray(entry.savePaths)

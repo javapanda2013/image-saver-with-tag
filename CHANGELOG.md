@@ -5,6 +5,44 @@
 
 ---
 
+## [1.46.15] - 2026-05-03
+
+### Changed — GROUP-72 Phase C-3-opt：保存ウィンドウ renderHistory の entry レベル smart reuse 化
+
+#### 経緯
+v1.46.14 で Phase C-3 の helper diff + sendMessage emit + 受信側 listener を実装したが、受信側は debounced 200ms 後に `renderHistory()` 全件再描画する interim 実装だった。Q-35-4=a の理想形（entry レベル DOM 部分更新）への最適化を Phase C-3-opt として実施。
+
+#### 調査結果
+spec-cite で 2 ファイルの保存履歴描画関数を読み込んだ結果、片側では既に entry レベル smart reuse が実装済（v1.36.0 GROUP-35-perf-B-2 / v1.41.1 GROUP-43 Phase 2-reuse）。一方、保存ウィンドウ側 `renderHistory` は line 2859 の `list.innerHTML = ""` で全 DOM 破棄＋全件再構築する full rebuild パスしか持たず、entry レベル smart reuse 未対応だった。
+
+#### 修正内容（保存ウィンドウ側のみ、設定画面側は変更なし）
+- `src/modal/modal.js`：
+  - `_buildHistoryItem` で `item.dataset.thumbId = entry.thumbId` を設定（smart reuse の thumbId 一致判定用）
+  - 新関数 `_renderHistoryItemsReuse(list, pageSlice, forceRebuildIds)` 追加：既存 history-item を `data-entry-id` でインデックス化、`thumbId` 一致 ＋ `forceRebuildIds` 非該当の entry は DOM 再利用＋選択状態同期のみ、それ以外は作り直し。設定画面側 `_renderHistoryGridNormalReuse` 同等のパターン
+  - Phase C-3 listener (`_phaseC3ScheduleHistoryRefresh`) を `targetId` パラメータ受取に変更、debounce window 内で id を Set に coalesce、発火時に `window.__phaseC3OptForceRebuildIds = ids` 経由で `renderHistory` へ伝達
+  - `renderHistory` を smart reuse 対応：`__phaseC3OptForceRebuildIds` が Set のときは `_renderHistoryItemsReuse` 経由、それ以外は従来通り全削除＋ chunked 描画（filter / page / 表示モード変更時の安全策）
+  - smart reuse パスでは `list.innerHTML = ""` をスキップ、force rebuild 対象 entry の img のみ src 解除（他は再利用で blob URL retain なし）
+
+#### 既知の余技課題（follow-up 候補）
+- 設定画面側 `_renderHistoryGridNormalReuse` は `thumbId` 一致のみで再利用判定するため、UPDATED entry でタグ／作者のみ変更（thumbId 不変）の場合に古い DOM が残るバグの可能性。本リリース範囲外（Phase C-3 listener が `renderHistoryGrid()` 全体を呼ぶため filter recalc は走るが、最終的に thumbId 一致なら old card 再利用される）。次の patch で `forceRebuildIds` 機構を設定画面側にも適用する予定
+
+#### パフォーマンス影響
+- 受信側 wall-time：既存タイル数が大半再利用されるため、数千 entry 環境でも更新は変更分の rebuild + selection 同期のみで完了（数 ms オーダー）
+- 描画 GPU / paint コスト：DOM ノードの大半が変わらないため re-layout / re-paint が大幅減
+- メモリ：blob URL retain なし（force rebuild 対象のみ src 解除、他は既存維持）
+
+#### 検証
+- node --check：modal.js PASS
+- 既存 chunked パス（filter / page / 表示モード変更時）は従来通り動作するよう if 分岐で残置
+
+#### Files Changed
+- `manifest.json`：1.46.14 → 1.46.15
+- `src/modal/modal.js`：smart reuse 関数追加、Phase C-3 listener targetIds 追跡化、renderHistory 分岐対応
+
+#### Native 変更なし
+
+---
+
 ## [1.46.14] - 2026-05-03
 
 ### Added — GROUP-35-perf-A Phase C-3：saveHistory 差分通知（HISTORY_ENTRY_ADDED/UPDATED/DELETED）と受信側部分更新、エクスポート V2 zip
