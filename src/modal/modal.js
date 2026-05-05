@@ -135,12 +135,17 @@ function _phaseC3ScheduleHistoryRefresh(targetId) {
       if (typeof browser !== "undefined" && browser.runtime) {
         const r = await browser.runtime.sendMessage({ type: "GET_SAVE_HISTORY" });
         if (r && Array.isArray(r.saveHistory)) {
-          saveHistory = r.saveHistory;
-          // v1.46.15 GROUP-72：targetIds を window 経由で renderHistory へ伝達
-          // （renderHistory 内で smart reuse の force rebuild Set として利用）
-          window.__phaseC3OptForceRebuildIds = ids;
-          if (typeof renderHistory === "function") renderHistory();
-          window.__phaseC3OptForceRebuildIds = null;
+          // v1.46.16 GROUP-73 Phase C-3-fix：saveHistory は setupModalEvents の関数
+          // パラメータ（closure）、renderHistory は同関数内ローカル定義のため、
+          // ここから直接アクセス不可。setupModalEvents が expose した window アクセサ経由で
+          // 更新＋再描画する。
+          if (typeof window.__modalSetSaveHistory === "function" && typeof window.__modalRenderHistory === "function") {
+            window.__modalSetSaveHistory(r.saveHistory);
+            // targetIds を window 経由で renderHistory へ伝達（smart reuse 用 force rebuild Set）
+            window.__phaseC3OptForceRebuildIds = ids;
+            window.__modalRenderHistory();
+            window.__phaseC3OptForceRebuildIds = null;
+          }
         }
       }
     } catch (err) {
@@ -2993,6 +2998,15 @@ function setupModalEvents(
     _modalUpdateFavBulkBtns();
     _modalUpdateSelectAllBtns(filtered);
   }
+
+  // v1.46.16 GROUP-73 Phase C-3-fix：top-level の Phase C-3 listener から
+  // saveHistory（setupModalEvents の関数パラメータ closure 変数）と renderHistory
+  // （setupModalEvents 内ローカル関数）に到達できなかった bug の修正。
+  // setupModalEvents 起動時に window 経由で setter / 呼出関数を expose し、
+  // listener は window アクセサ経由で更新と再描画を行う。
+  // setupModalEvents が再呼出された場合（多重起動）は上書きで OK。
+  window.__modalSetSaveHistory = (newData) => { saveHistory = newData; };
+  window.__modalRenderHistory  = () => renderHistory();
 
   function renderHistoryPager(total) {
     const totalPages = Math.max(1, Math.ceil(total / _histPageSize));

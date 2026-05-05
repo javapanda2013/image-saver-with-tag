@@ -5,6 +5,60 @@
 
 ---
 
+## [1.46.16] - 2026-05-06
+
+### Fixed — GROUP-73：保存ウィンドウの Phase C-3 listener が DOM 更新できなかった scope バグ修正
+
+#### 経緯
+ユーザー報告（2026-05-06）：「設定画面の保存履歴を編集 → 事前に表示していた保存ウィンドウの保存履歴に自動反映されず、リロードしないと反映されない」。v1.46.14 で Phase C-3 受信側 listener を追加し、v1.46.15 で entry レベル smart reuse を導入したが、**top-level に置いた listener から DOM 更新関数 / 状態変数に到達できないという closure scope バグ**が混入していた。
+
+#### 根本原因
+modal.js の構造：
+- `saveHistory` は `setupModalEvents(...)` 関数のパラメータ（line 1873）→ closure 変数
+- `renderHistory` は `setupModalEvents` 内でローカル定義された関数（line 2859）
+- v1.46.14 で追加した Phase C-3 listener は modal.js の **top-level**（line 120 付近）に置かれていた
+- listener 内の `saveHistory = r.saveHistory`（line 138）は **未宣言変数への代入 → 暗黙的 global 化**で、`setupModalEvents` 内の closure 変数 `saveHistory` には反映されない
+- listener 内の `if (typeof renderHistory === "function") renderHistory()` は、`setupModalEvents` 外側 scope では `renderHistory` が undefined → 条件 false で何も実行されない
+- try-catch で例外も握りつぶされていたため、listener 経路は完全に no-op だったがログに痕跡が出ない構造になっていた
+
+これにより、HISTORY_ENTRY_ADDED/UPDATED/DELETED が emit されてもモーダル側の DOM は更新されず、ユーザーがモーダルをリロード（または `MODAL_NEW_IMAGE` で `window.location.reload()`）するまで古い状態のままだった。
+
+#### 修正内容
+- `src/modal/modal.js`：
+  - `setupModalEvents` 内（renderHistory 定義直後）で window アクセサを expose：
+    ```js
+    window.__modalSetSaveHistory = (newData) => { saveHistory = newData; };
+    window.__modalRenderHistory  = () => renderHistory();
+    ```
+    `setupModalEvents` の closure に閉じ込められた `saveHistory` パラメータと `renderHistory` ローカル関数を、外側からアクセスできる入口を 2 本だけ用意する。多重起動時は最後の起動の expose で上書きされる
+  - top-level の Phase C-3 listener を window アクセサ経由に変更：
+    ```js
+    if (typeof window.__modalSetSaveHistory === "function" && typeof window.__modalRenderHistory === "function") {
+      window.__modalSetSaveHistory(r.saveHistory);
+      window.__phaseC3OptForceRebuildIds = ids;
+      window.__modalRenderHistory();
+      window.__phaseC3OptForceRebuildIds = null;
+    }
+    ```
+    これで `saveHistory` が `setupModalEvents` の closure を更新し、`renderHistory` が呼出されて smart reuse パスへ流れる
+
+#### 振り返り
+v1.46.14 で listener を追加した時点で「modal.js は IIFE / setupModalEvents で囲まれている」という構造を見落とし、settings.js（top-level に `_historyData` / `renderHistoryGrid` を持つ flat 構造）と同じ感覚で書いてしまった。設計画面と保存ウィンドウは似て見えても module 内部の scope 構造が異なる。listener / 状態 / 描画関数のような跨 scope アクセスを伴うコードは、**実装直後に実機の console で `typeof targetFn === "function"` を確認**するか、closure 由来の参照は window アクセサ経由を最初から既定とすべきだった。
+
+ユーザーが v1.46.14 動作確認時に「動作確認完了」と判断された経緯：恐らく `MODAL_NEW_IMAGE` 経由の reload 誘発（v1.46.6 GROUP-62 由来）が saveHistory 取得を fresh 化していたため、setting → modal の単発編集ではなく「保存後の自動 reload」シナリオに紛れて見落とされたと推測。今回 reload なしの単発編集で初めて顕在化。
+
+#### 検証
+- node --check：modal.js PASS
+- 既存 chunked パス（filter / page / 表示モード変更時）と smart reuse パス（HISTORY_ENTRY_* listener 経由）の両方が動作することを `setupModalEvents` 内の expose 配置でカバー
+
+#### Files Changed
+- `manifest.json`：1.46.15 → 1.46.16
+- `src/modal/modal.js`：window アクセサ expose 追加、Phase C-3 listener を window 経由更新へ変更
+
+#### Native 変更なし
+
+---
+
 ## [1.46.15] - 2026-05-03
 
 ### Changed — GROUP-72 Phase C-3-opt：保存ウィンドウ renderHistory の entry レベル smart reuse 化
