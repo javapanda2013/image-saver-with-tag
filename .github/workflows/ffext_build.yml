@@ -48,16 +48,31 @@ jobs:
           node-version: '24'
 
       # ---------------------------------------------------------------
-      # 3. web-ext をグローバルインストール
-      #    （package.json が無いので --global で OK）
+      # 3. devDependencies インストール（ESLint 等）
+      #    GROUP-74-eslint（v1.46.17）：package.json devDependencies の eslint をインストール。
+      #    package-lock.json は git 追跡しているため `npm ci` で deterministic。
+      # ---------------------------------------------------------------
+      - name: Install dev dependencies (ESLint)
+        run: npm ci
+
+      # ---------------------------------------------------------------
+      # 3-bis. web-ext をグローバルインストール（後段 lint / sign で利用）
       # ---------------------------------------------------------------
       - name: Install web-ext
         run: npm install --global web-ext
 
       # ---------------------------------------------------------------
-      # 4. Lint（警告で CI を止めない）
+      # 4-a. ESLint（GROUP-74-eslint v1.46.17）：no-undef / no-redeclare などの
+      #     構造的バグを CI で機械検出。0 errors を要求、warning は許容。
+      #     v1.46.14 closure scope バグ（暗黙的 global、undefined function 呼出）の再発防止。
       # ---------------------------------------------------------------
-      - name: Lint extension
+      - name: Run ESLint (errors fail the build)
+        run: npx eslint src/ --max-warnings=999
+
+      # ---------------------------------------------------------------
+      # 4-b. web-ext lint（manifest 検証など、警告で CI を止めない既存運用）
+      # ---------------------------------------------------------------
+      - name: web-ext lint
         run: web-ext lint --source-dir . --warnings-as-errors=false
         continue-on-error: true
 

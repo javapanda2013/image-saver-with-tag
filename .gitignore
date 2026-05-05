@@ -53,3 +53,7 @@ CLAUDE.md
 # エクスポートバックアップ（ローカル作業用）
 backup/
 export/
+
+# Node / ESLint（GROUP-74-eslint v1.46.17、本リポジトリは Firefox WebExtension のため
+# node_modules は配布物に不要、CI で `npm ci` で都度復元する設計）
+node_modules/

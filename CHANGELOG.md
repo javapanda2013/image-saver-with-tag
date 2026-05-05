@@ -5,6 +5,54 @@
 
 ---
 
+## [1.46.18] - 2026-05-06
+
+### Added — GROUP-74 構造的予防策 Tier 1〜3：v1.46.14〜v1.46.16 の連続 silent failure 事案の構造的再発防止
+
+#### 経緯
+v1.46.17 で GROUP-74 fix（group モード dispatch）をユーザー実機検証で確認完了。ただし v1.46.14 / v1.46.15 / v1.46.16 で Phase C-3 cross-context auto-sync 機能が 3 リリース連続で動かなかった事案を踏まえ、ユーザー指摘「CLAUDE.md だけでなく構造的に防げなければ再発」を受けて 3 段の構造的予防機構を追加。
+
+#### Tier 1：ESLint 導入（コンパイル時相当の機械検出）
+- `package.json`：devDependencies に `eslint ^9.39.4` 追加
+- `eslint.config.js`：rules `no-undef: error` ／ `no-redeclare: error (builtinGlobals=false)` ／ `no-empty: warn (allowEmptyCatch=true)` ／ `no-unused-vars: warn`。Firefox WebExtension globals ＋ プロジェクト固有 helpers（showBusyModal 等）を declare
+- `.github/workflows/ffext_build.yml`：`npm ci` で deps install ＋ `npx eslint src/ --max-warnings=999` を web-ext sign 前に実行、errors で CI fail
+- `.gitignore`：`node_modules/` 追加
+- `make_zip.py`：BANNED_PATH_FRAGMENTS に `package.json` / `package-lock.json` / `eslint.config` 追加（dev-only ファイルが ZIP に混入しない構造的セーフガード）
+- `src/modal/modal.js`：line 5856 の `renderAuthorChips` 重複定義に対し `// eslint-disable-next-line no-redeclare` 付与（既存 legacy、本リリース範囲外の整理事項として TODO 化）
+
+#### Tier 2：scan-response 第 8 カテゴリ branch-flag-claim
+- `.claude/skills/spec-driven/workflow-stamp/workflow_stamp.py`：`BRANCH_FLAG_CLAIM_REGEXES` ＋ `BRANCH_FLAG_EVIDENCE_REGEXES` 追加
+- 「X 専用」「fallback」「フォールバック」「新分岐」表現を検出時、近傍に組合せ matrix 根拠（`組合せ表` / `matrix` / `2 × 2` / `全 4 セル` 等）が併記されていなければ flag
+- v1.46.15 で「smart reuse は normal 専用、group は fallback」と書きながら group + force のセル挙動を机上検証しなかった事案の応答送信前 gate
+
+#### Tier 3：release-flow uat-checklist cross-context category
+- `.claude/skills/spec-driven/release-flow/release_flow.py`：UAT_CHECKLISTS に `cross-context` カテゴリ新設
+- trigger_keywords：`HISTORY_ENTRY_*` / `_phaseC3SenderId` / `_phaseC3OptForceRebuildIds` / `_emitSaveHistoryDiff` / `_phaseC3OptDispatchRender` / `Phase C-3` / `__modalSetSaveHistory` / `__modalRenderHistory`
+- items：cross-context auto-sync の主要シナリオ 13 件（タグ追加／削除／編集／お気に入り／削除／保存／display mode normal × group 両方／古い履歴ページ × 新ページ両方／同時編集 race condition／自 context skip 機能）を自動列挙
+
+#### 既存ユーザーへの影響
+- ESLint は CI 専用（拡張機能の動作には影響なし）
+- scan-response / uat-checklist は Claude 開発側の応答送信前 / リリース前 gate（ユーザー側挙動に影響なし）
+- 本リリースは dev tooling のみ、機能変更なし
+
+#### 検証
+- `npx eslint src/` PASS（0 errors / 20 warnings）
+- scan-response テスト：「smart reuse は normal 専用、group モードでは fallback です」を入力 → branch-flag-claim 2 件検出
+- uat-checklist テスト：`uat-checklist --version 1.46.18 --category cross-context` で 13 件の項目表示
+
+#### Files Changed
+- `manifest.json`：1.46.17 → 1.46.18
+- `package.json`（new）：ESLint devDependency
+- `package-lock.json`（new）
+- `eslint.config.js`（new）
+- `.gitignore`：node_modules/ 追加
+- `.github/workflows/ffext_build.yml`：npm ci ＋ ESLint step 追加
+- `src/modal/modal.js`：line 5856 に eslint-disable コメント
+
+#### Native 変更なし
+
+---
+
 ## [1.46.17] - 2026-05-06
 
 ### Fixed — GROUP-74：保存ウィンドウ「グループ表示モード」での Phase C-3 listener が古いタイル＋空 src を残す問題

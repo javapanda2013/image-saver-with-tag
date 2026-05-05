@@ -5853,6 +5853,13 @@ function setupModalEvents(
   const allAuthors        = [...new Set([...(recentAuthors || []), ...(globalAuthors || [])])];
   let selectedAuthors     = [];
 
+  // GROUP-74-eslint（v1.46.17 ESLint 導入）：本ファイルには line 2475 に同名 renderAuthorChips
+  // が既に定義されているが、両者は別役割（line 2475 は履歴フィルター chip、本関数は保存先入力
+  // chip）。JS の関数宣言ホイスティングで 2 番目が 1 番目を上書きするが、setupModalEvents 内で
+  // 双方の callsite が「自身に近い」定義を期待してきた経緯があり、そのまま運用継続。
+  // 本来はリネーム整理（renderFilterAuthorChips / renderDestAuthorChips）が望ましいが、
+  // 本リリース範囲外。eslint-disable コメントで no-redeclare を本関数のみ抑止。
+  // eslint-disable-next-line no-redeclare
   function renderAuthorChips() {
     authorChipsEl.innerHTML = "";
     selectedAuthors.forEach(a => {
