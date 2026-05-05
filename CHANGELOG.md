@@ -5,6 +5,58 @@
 
 ---
 
+## [1.46.17] - 2026-05-06
+
+### Fixed — GROUP-74：保存ウィンドウ「グループ表示モード」での Phase C-3 listener が古いタイル＋空 src を残す問題
+
+#### 経緯
+v1.46.16 で Phase C-3 listener の closure scope バグを修正したが、ユーザー報告で別の症状が継続：
+- 設定画面で履歴を編集 → 保存ウィンドウ側のタイルが空白（src 空）＋古いタグが残る
+- リロードでのみ反映
+
+debug ビルド経由のログ取得（v1.46.17 debug、AMO 経由ではなく一時読込で取得した経緯あり、本リリースで除去）で原因判明：
+
+#### 根本原因
+v1.46.15 GROUP-72 で導入した smart reuse 経路は `mode === "normal"` 専用。group モードでは `_renderHistoryChunked` への fallback だが、renderHistory の sync 部で `forceRebuildIds` 有時に **`list.innerHTML = ""` を skip** していた（smart reuse 期待）ため：
+1. sync 部：target 行の `img.src = ""` のみ実行、list 全体は残置
+2. async 部：`mode === "group"` で `_renderHistoryChunked` 経由 → list 残置のまま新 group wrapper を `appendChild`
+3. 結果：旧 tile（src 空）と新 tile が共存、ユーザーは旧 tile を見て「空白＋古いタグ」と認識
+
+#### 修正方針
+sync 部の `if/else` 切替を廃止、async `.then()` / `.catch()` 内に `_phaseC3OptDispatchRender(list, pageSlice, mode, gen, forceRebuildIds)` 関数を追加して mode + forceRebuildIds の組合せに応じて clear 範囲を切替：
+
+| 条件 | clear | 描画関数 |
+|---|---|---|
+| `forceRebuildIds && mode === "normal"` | target img のみ src="" | `_renderHistoryItemsReuse`（smart reuse） |
+| `forceRebuildIds && mode === "group"` | 全 src="" + `innerHTML=""` | `_renderHistoryChunked`（full rebuild） |
+| `forceRebuildIds` なし | 全 src="" + `innerHTML=""` | `_renderHistoryChunked` |
+
+group モード用 entry レベル smart reuse は GROUP-72-opt-2 として後送（性能改善のみ、機能的には full rebuild で正しく反映される）。
+
+#### 修正内容
+- `src/modal/modal.js`：
+  - `renderHistory` sync 部の if/else clear 切替を削除（async 側 dispatch に集約）
+  - 新関数 `_phaseC3OptDispatchRender` を追加、mode + forceRebuildIds の組合せ別に clear 範囲と描画関数を切替
+  - `.then()` / `.catch()` から本関数を呼出すよう変更
+
+#### 振り返り
+v1.46.15 GROUP-72 実装時、`_renderHistoryChunked` が `appendChild` のみで既存 DOM を removed しないことを把握しつつ、smart reuse 経路と同じ前提（list 残置）で chunked 経路に分岐させた設計ミス。group モードでの動作確認が漏れていた（normal モードのみ脳内検証）。今後 `forceRebuildIds` のような分岐 flag を入れる際は、**全 mode × flag の組合せ表を作って各セルで挙動が正しいか机上検証**するルールを追加すべき。
+
+memory `feedback_release_flow.md` 2-bis に記録：本プロジェクトでは debug ログ取得目的でも一時読込（about:debugging Temporary Add-on）は使用しない。AMO 署名 XPI 経由で診断ログ入りリリースを出すフローに統一。
+
+#### 検証
+- node --check：modal.js / settings.js / background.js PASS
+- debug ログ（v1.46.17 debug 中間ビルド）で原因特定後、本リリースで全 debug ログ除去
+
+#### Files Changed
+- `manifest.json`：1.46.16 → 1.46.17
+- `src/modal/modal.js`：renderHistory 内 sync clear 廃止、`_phaseC3OptDispatchRender` 追加、debug ログ全除去
+- `src/settings/settings.js`：debug ログ除去のみ
+
+#### Native 変更なし
+
+---
+
 ## [1.46.16] - 2026-05-06
 
 ### Fixed — GROUP-73：保存ウィンドウの Phase C-3 listener が DOM 更新できなかった scope バグ修正

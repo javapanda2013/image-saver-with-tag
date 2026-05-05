@@ -2865,27 +2865,16 @@ function setupModalEvents(
     const gen = ++_historyRenderGen; // この呼び出しの世代番号を確保
     const list = document.getElementById("history-list");
     // v1.46.15 GROUP-72 Phase C-3-opt：smart reuse モード判定。
+    // v1.46.17 GROUP-74 fix：sync 部での src="" / innerHTML="" 切替えを廃止し、
+    // mode 判定（async）後に branch 別に clear するよう移動。
+    // 旧実装は sync 部で「smart reuse 期待で innerHTML 残置」したが、async 側で
+    // mode==="group" の場合 chunked 経路へ落ちて list 残置のまま appendChild するため
+    // 旧 item に src="" が残ったまま新 item が追加され、ユーザーから古い空 tile が見える事象に。
     // window.__phaseC3OptForceRebuildIds が Set ならそれを force rebuild 対象として smart reuse。
     // 未指定なら従来通りの全削除＋再構築（filter / page / 表示モード変更時の安全策）。
     const forceRebuildIds = (typeof window !== "undefined" && window.__phaseC3OptForceRebuildIds instanceof Set)
       ? window.__phaseC3OptForceRebuildIds
       : null;
-    // v1.46.0 GROUP-57 案 b: 再描画前に既存 img の src を null 化＋ load イベント未発火の
-    // blob URL が残っている場合に備えて img.src=""（href 解除でブラウザ内部の参照を断ち、
-    // detached 後の orphan-rooted DOM が dataUrl/blob を retain する経路を弱める）。
-    // load 完了済の img は _attachBlobUrlToImg 内で revoke 済みなのでここでは src 解除のみ。
-    if (!forceRebuildIds) {
-      // 全削除パス：従来通り
-      const oldImgs = list.querySelectorAll("img.history-thumb");
-      for (const oldImg of oldImgs) oldImg.src = "";
-      list["innerHTML"] = "";
-    } else {
-      // smart reuse パス：force rebuild 対象 entry の img のみ src 解除（他は再利用）
-      for (const id of forceRebuildIds) {
-        const el = list.querySelector(`.history-item[data-entry-id="${CSS.escape(id)}"] img.history-thumb`);
-        if (el) el.src = "";
-      }
-    }
 
     // infobar 更新
     const countEl   = document.getElementById("history-count");
@@ -2975,21 +2964,12 @@ function setupModalEvents(
       // 古い世代の呼び出しは描画しない（二重描画防止）
       if (gen !== _historyRenderGen) return;
       const mode = historyDisplayMode || "normal";
-      // v1.46.15 GROUP-72 Phase C-3-opt：smart reuse モード（通常モードのみ対応、
-      // group モードは既存の chunked パスへ fallback）
-      if (forceRebuildIds && mode === "normal") {
-        _renderHistoryItemsReuse(list, pageSlice, forceRebuildIds);
-      } else {
-        // v1.26.2: 初期 6 件同期描画＋残りは requestIdleCallback で裏描画
-        _renderHistoryChunked(list, pageSlice, mode, gen);
-      }
+      // v1.46.17 GROUP-74：mode と forceRebuildIds の組合せに応じて clear 範囲と描画関数を切替
+      _phaseC3OptDispatchRender(list, pageSlice, mode, gen, forceRebuildIds);
     }).catch(() => {
       if (gen !== _historyRenderGen) return;
-      if (forceRebuildIds) {
-        _renderHistoryItemsReuse(list, pageSlice, forceRebuildIds);
-      } else {
-        _renderHistoryChunked(list, pageSlice, "normal", gen);
-      }
+      // .catch では mode 不明なので "normal" を仮定（forceRebuildIds 有無で smart reuse 判定）
+      _phaseC3OptDispatchRender(list, pageSlice, "normal", gen, forceRebuildIds);
     });
 
     // v1.33.0 GROUP-32-b：音声一括トグルボタンの状態更新
@@ -3164,6 +3144,33 @@ function setupModalEvents(
     const remaining = units.slice(_HIST_INITIAL_BATCH_SIZE);
     if (remaining.length > 0) {
       _scheduleHistoryBgRender(gen, remaining, renderUnit);
+    }
+  }
+
+  // v1.46.17 GROUP-74 fix：mode (normal/group) と forceRebuildIds (Set/null) の組合せ別に
+  // clear 範囲と描画関数を切替える dispatch 関数。
+  // - normal + forceRebuildIds: smart reuse 経路（target img のみ src clear → _renderHistoryItemsReuse が
+  //   target item を rebuild、他 item を再利用）
+  // - group + forceRebuildIds: smart reuse 未対応のため full clear + chunked へ fallback
+  //   （group 用 entry レベル smart reuse は GROUP-72-opt-2 として後送）
+  // - forceRebuildIds なし（filter / page / 表示モード変更時）: full clear + chunked
+  //
+  // sync 部の旧 src="" / innerHTML="" 切替えはここに集約された。
+  function _phaseC3OptDispatchRender(list, pageSlice, mode, gen, forceRebuildIds) {
+    if (forceRebuildIds && mode === "normal") {
+      // smart reuse パス：force rebuild 対象 entry の img のみ src 解除（他は再利用）
+      // _renderHistoryItemsReuse が target item を ex.remove() → _buildHistoryItem で rebuild
+      for (const id of forceRebuildIds) {
+        const el = list.querySelector(`.history-item[data-entry-id="${CSS.escape(id)}"] img.history-thumb`);
+        if (el) el.src = "";
+      }
+      _renderHistoryItemsReuse(list, pageSlice, forceRebuildIds);
+    } else {
+      // full clear + chunked パス（v1.46.0 GROUP-57 案 b 由来の blob URL retain 対策を維持）
+      const oldImgs = list.querySelectorAll("img.history-thumb");
+      for (const oldImg of oldImgs) oldImg.src = "";
+      list["innerHTML"] = "";
+      _renderHistoryChunked(list, pageSlice, mode, gen);
     }
   }
 
