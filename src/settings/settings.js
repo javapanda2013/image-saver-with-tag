@@ -3712,9 +3712,12 @@ async function renderHistoryTab() {
   renderHistoryGrid();
 }
 
-// v1.46.19 GROUP-75-grid-resizable (Q-75-1=g)：保存履歴 grid のリサイズ機構。
-// CSS で resize: horizontal を有効化済、JS 側は永続化（storage.local.settingsHistGridWidth）と
-// 起動時復元のみ担当。_extFlSetupTableResize と同パターン。
+// v1.46.19 GROUP-75-grid-resizable (Q-75-1=g) → v1.46.20 GROUP-78 改修：
+//   v1.46.19 では CSS `resize: horizontal`（右下角のみハンドル）＋ ResizeObserver 永続化 のシンプル構成。
+//   v1.46.20 で「左右 edge にカスタム drag handle 配置」「親エリア超過拡大」のため、
+//   標準 resize を撤去し _bindEdgeDrag による mousedown/mousemove/mouseup 制御へ刷新。
+//   永続化は ResizeObserver ではなく drag 終了時（mouseup）に直接保存する方式に変更。
+//   _extB1SetupResizer / modal 側 column resizer と同パターン。
 function _setupHistGridResize(savedWidth) {
   const grid = document.getElementById("hist-grid");
   if (!grid) return;
@@ -3724,18 +3727,65 @@ function _setupHistGridResize(savedWidth) {
   }
   if (grid.dataset.resizeBound) return; // 多重 bind 防止
   grid.dataset.resizeBound = "1";
-  // ResizeObserver で width 変化検知、debounce 500ms で保存
-  let saveTimer = null;
-  const ro = new ResizeObserver(() => {
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      const w = Math.round(grid.offsetWidth);
-      if (w > 0) {
-        browser.storage.local.set({ settingsHistGridWidth: w }).catch(() => {});
-      }
-    }, 500);
+
+  // 左右 edge handle DOM を grid 内へ注入
+  const hL = _injectHistGridHandle(grid, "left");
+  const hR = _injectHistGridHandle(grid, "right");
+
+  const minW = 480; // 2 列維持の最小（CSS と整合）
+  const maxW = () => Math.max(minW, window.innerWidth - 40); // viewport - 左右 20px 余白
+
+  const persistWidth = () => {
+    const w = Math.round(grid.offsetWidth);
+    if (w > 0) {
+      browser.storage.local.set({ settingsHistGridWidth: w }).catch(() => {});
+    }
+  };
+
+  if (hL) _bindHistGridEdgeDrag(hL, "left",  grid, minW, maxW, persistWidth);
+  if (hR) _bindHistGridEdgeDrag(hR, "right", grid, minW, maxW, persistWidth);
+}
+
+// GROUP-78 v1.46.20：左右 edge ハンドル DOM 注入（既存があれば再利用）
+function _injectHistGridHandle(grid, side) {
+  const cls = side === "left" ? "history-grid-handle-left" : "history-grid-handle-right";
+  let h = grid.querySelector(":scope > ." + cls);
+  if (!h) {
+    h = document.createElement("div");
+    h.className = cls;
+    grid.appendChild(h);
+  }
+  return h;
+}
+
+// GROUP-78 v1.46.20：edge handle の mousedown/move/up ドラッグ制御。
+// _extB1SetupResizer の pattern を踏襲（settings.js line 9234-9259）。
+function _bindHistGridEdgeDrag(handle, side, grid, minW, maxWFn, persistFn) {
+  if (handle.dataset.dragBound) return;
+  handle.dataset.dragBound = "1";
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = grid.offsetWidth;
+    document.body.style.cursor = "col-resize";
+    handle.classList.add("dragging");
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      // 左 handle はドラッグ方向と幅増減が逆（左に引くと幅増）
+      const delta = side === "left" ? -dx : dx;
+      const newW = Math.max(minW, Math.min(maxWFn(), startW + delta));
+      grid.style.width = newW + "px";
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      handle.classList.remove("dragging");
+      persistFn();
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
   });
-  ro.observe(grid);
 }
 
 // @spec 02_詳細設計書.md#4-3

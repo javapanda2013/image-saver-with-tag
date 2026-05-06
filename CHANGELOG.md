@@ -5,6 +5,56 @@
 
 ---
 
+## [1.46.20] - 2026-05-06
+
+### Fixed / Added — GROUP-78：保存履歴 grid の左右 edge カスタムリサイズハンドル + 親エリア超過拡大対応 ＋「指摘事項」対応ルールの flow/skill 反映
+
+#### 経緯
+v1.46.19 GROUP-75 で `.history-grid` に CSS 標準 `resize: horizontal` を追加し横リサイズ可能化したが、ユーザー実機検証で 2 つの UI 不備が判明：
+1. リサイズハンドルが**右下角のみ**（CSS 標準 `resize` は browser native でハンドル位置制御不可）
+2. `max-width: 100%` 制約で**親エリア（`body.wide-tab` 720〜1480px）超過拡大不可**
+
+ユーザー要望：「左右の境界をつまめるように」「幅を元々のエリア以上に拡大できるように」。リテイク扱いで plan mode 提示後に修正。同時に、ユーザー指摘「『指摘事項』への対応は黙々と進めずに、修正方針を明確にして提示しながら対応を行うこと※フローやスキルに要反映」を受け、CLAUDE.md ＋ skill バンドルへ「指摘事項対応フロー」を反映。
+
+#### 修正内容（A：UI 改修）
+- `src/settings/settings.html` `.history-grid`：
+  - CSS 標準 `resize: horizontal` を撤去
+  - `max-width: 100%` → `calc(100vw - 40px)`（viewport 基準、左右 20px 余白）
+  - `position: relative` 追加（handle 位置決め用）
+  - 新クラス `.history-grid-handle-left` / `.history-grid-handle-right`：6px 幅、`cursor: col-resize`、hover / dragging 時に半透明青ハイライト、grid 左右 edge にオーバーラップ配置（`left: -3px` / `right: -3px`）
+- `src/settings/settings.js`：
+  - `_setupHistGridResize` を ResizeObserver pure pattern から mousedown / mousemove / mouseup pattern へ刷新（既存 `_extB1SetupResizer` line 9234-9259 の pattern 踏襲）
+  - 新ヘルパ関数 `_injectHistGridHandle(grid, side)`：左右 edge handle DOM の注入（既存があれば再利用）
+  - 新ヘルパ関数 `_bindHistGridEdgeDrag(handle, side, grid, minW, maxWFn, persistFn)`：mousedown 起点ドラッグ制御。`startX` / `startW` 記録 → `mousemove` で `dx` 計算（左 handle は方向反転）→ `Math.max(minW, Math.min(maxW, startW + delta))` で clamp → `grid.style.width` 更新 → `mouseup` で listener 解除＋永続化呼出。`document.body.style.cursor = "col-resize"` セット / 解除、`.dragging` class 追加 / 削除で視覚フィードバック
+  - min: 480px（v1.46.19 既存値継承）、max: `Math.max(480, window.innerWidth - 40)`
+  - 永続化（`storage.local.settingsHistGridWidth`）はドラッグ終了時（mouseup）に直接保存。debounce 不要
+
+#### 修正内容（B：「指摘事項」対応ルールの flow/skill 反映）
+- `CLAUDE.md`「🟡 作業フロー」配下に**「指摘事項対応フロー」節**を新設：4 段階（事実確認 → 修正方針の選択肢提示 → ユーザー承認 → 修正着手）を明文化、過去事例（v1.46.19 home.html 肥大化、v1.46.19 resize handle UI）を併記
+- `.claude/skills/spec-driven/config.yaml` `workflow_patterns` に **#24「ユーザー指摘事項受領」** 追加：trigger keywords（気になる / してほしい / になっていない / 妥当か / リテイク / 異常な / 黙々と進めず 等）、expected_skills（spec-cite:cite ＋ question-builder:issue）、不徹底 risk と過去事例を記載
+- workflow_patterns 件数 23 → 24
+
+#### 動作確認観点（v1.46.20 UAT）
+- 設定画面の保存履歴タブで、grid 左 edge にカーソル合わせ → `col-resize` cursor 表示 → ドラッグで左方向に拡大、grid 左端が viewport 左へ拡張
+- 同様に右 edge → 右方向へ拡大（viewport 右端まで）
+- hover で edge handle が半透明青にハイライト、ドラッグ中も同色維持
+- 拡大後リロード → `settingsHistGridWidth` 復元
+- viewport 縮小後、grid が viewport 超過するなら overflow / scroll 発生確認
+- 既存タイル（width 220px / gap 10px）の折返し動作維持
+
+#### Files Changed
+- `manifest.json`：1.46.19 → 1.46.20
+- `package.json`：同
+- `src/settings/settings.html`：`.history-grid` CSS 改訂 + `.history-grid-handle-*` 新規 CSS
+- `src/settings/settings.js`：`_setupHistGridResize` 刷新、`_injectHistGridHandle` / `_bindHistGridEdgeDrag` 新設
+- `CLAUDE.md`：「指摘事項対応フロー」節新設（git 管理外、ローカル運用）
+- `.claude/skills/spec-driven/config.yaml`：workflow_patterns #24 追加
+- `設計書類/06_プランログ.md`：GROUP-78 / GROUP-77 受領追記
+
+#### Native 変更なし
+
+---
+
 ## [1.46.19] - 2026-05-06
 
 ### Fixed / Added — GROUP-75：設定画面の保存履歴 grid に padding 削減 + 横リサイズ可能化（Q-75-1=g）

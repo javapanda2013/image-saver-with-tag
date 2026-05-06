@@ -483,13 +483,33 @@
       display: flex; flex-wrap: wrap; align-content: flex-start;
       gap: 10px; padding: 10px 8px;  /* GROUP-75-grid-margin (Q-75-1=g) v1.46.19：14px→8px、左右合計 12px 余裕、modal 側 padding=8px と整合 */
       background: #f5f6fa;
-      /* GROUP-75-grid-resizable (Q-75-1=g) v1.46.19：保存ウィンドウ側は左エリアをリサイズしてスクロールバー
-         影響を回避できるが設定画面側はリサイズ手段がなかった。横リサイズ可能化で同等の余裕確保を提供。
-         min-width 480px は 2 列維持の最小、max-width は親はみ出し防止、resize は横方向のみ。
+      /* GROUP-78 v1.46.20：v1.46.19 の `resize: horizontal` を撤去（右下角のみのハンドル制約）、
+         左右 edge に custom drag handle を配置（.history-grid-handle-left/right）。
+         max-width も `100%` から `calc(100vw - 40px)` に緩和し、親エリア（body.wide-tab 720〜1480px）
+         超過の拡大を許可。min-width 480px は 2 列維持の最小（v1.46.19 継承）。
          幅は ResizeObserver で settingsHistGridWidth に永続化、起動時に復元（_setupHistGridResize 参照）。 */
-      resize: horizontal;
       min-width: 480px;
-      max-width: 100%;
+      max-width: calc(100vw - 40px);
+      position: relative;  /* handle 位置決め用 */
+    }
+    /* GROUP-78 v1.46.20：保存履歴 grid 左右 edge ドラッグハンドル */
+    .history-grid-handle-left,
+    .history-grid-handle-right {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 6px;
+      cursor: col-resize;
+      background: transparent;
+      z-index: 2;
+      user-select: none;
+    }
+    .history-grid-handle-left  { left: -3px; }
+    .history-grid-handle-right { right: -3px; }
+    .history-grid-handle-left:hover,
+    .history-grid-handle-right:hover,
+    .history-grid-handle-left.dragging,
+    .history-grid-handle-right.dragging {
+      background: rgba(74, 144, 226, .35);
     }
     .hist-card {
       background: #fff; border: 1px solid #e0e4f0; border-radius: 8px;
