@@ -481,8 +481,15 @@
     .history-grid {
       flex: 1; overflow-y: auto;
       display: flex; flex-wrap: wrap; align-content: flex-start;
-      gap: 10px; padding: 10px 14px;
+      gap: 10px; padding: 10px 8px;  /* GROUP-75-grid-margin (Q-75-1=g) v1.46.19：14px→8px、左右合計 12px 余裕、modal 側 padding=8px と整合 */
       background: #f5f6fa;
+      /* GROUP-75-grid-resizable (Q-75-1=g) v1.46.19：保存ウィンドウ側は左エリアをリサイズしてスクロールバー
+         影響を回避できるが設定画面側はリサイズ手段がなかった。横リサイズ可能化で同等の余裕確保を提供。
+         min-width 480px は 2 列維持の最小、max-width は親はみ出し防止、resize は横方向のみ。
+         幅は ResizeObserver で settingsHistGridWidth に永続化、起動時に復元（_setupHistGridResize 参照）。 */
+      resize: horizontal;
+      min-width: 480px;
+      max-width: 100%;
     }
     .hist-card {
       background: #fff; border: 1px solid #e0e4f0; border-radius: 8px;

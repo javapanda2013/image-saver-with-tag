@@ -5,6 +5,47 @@
 
 ---
 
+## [1.46.19] - 2026-05-06
+
+### Fixed / Added — GROUP-75：設定画面の保存履歴 grid に padding 削減 + 横リサイズ可能化（Q-75-1=g）
+
+#### 経緯
+ユーザー報告（2026-05-06、screenshot 添付）：「Windows の設定で『スクロールバーを常に表示』にすると、保存履歴タイルが 2 列になってしまう。幅に少し余裕をもたせる」。
+
+#### 原因
+`.history-grid` が flex-wrap、`.hist-card` width=220px 固定、padding=10px 14px、gap=10px。3 列分の合計 708px に対し、Windows「スクロールバー常時表示」時の 17px がさらに占有されると 2 列に折返す。保存ウィンドウ（modal.js）側は webkit-scrollbar width=5px で同問題を回避済だが、設定画面側はカスタムなしで Windows デフォルト 17px がそのまま占有。
+
+#### 修正方針（Q-75-1=g 確定）
+2 段構成：
+1. **(a) padding 削減**：14px → 8px（左右合計 12px の余裕）。modal 側 padding=8px と整合
+2. **追加：横リサイズ可能化**：設定画面側はリサイズ手段がなくウィンドウ幅依存だったため、`resize: horizontal` でユーザーが手動で `.history-grid` 幅を調整可能に。永続化込み（保存ウィンドウは左エリアをリサイズしてスクロールバー影響を回避できるが、設定画面側は同等の手段がなかった事への対応）
+
+#### 修正内容
+- `src/settings/settings.html` `.history-grid`：
+  - `padding: 10px 14px` → `padding: 10px 8px`（Tier a）
+  - `resize: horizontal` 追加
+  - `min-width: 480px`（2 列維持の最小）
+  - `max-width: 100%`（親はみ出し防止）
+- `src/settings/settings.js`：
+  - `renderHistoryTab` の storage.local.get に `settingsHistGridWidth` 追加
+  - 新関数 `_setupHistGridResize(savedWidth)`：保存値復元 + ResizeObserver で 500ms debounce → `storage.local.settingsHistGridWidth` に永続化（既存 `_extFlSetupTableResize` と同パターン）
+  - `renderHistoryTab` 末尾で `_setupHistGridResize` 呼出
+
+#### 検証
+- node --check：settings.js PASS
+- ESLint：errors 0
+- 保存履歴 grid に右下のリサイズハンドルが表示され、横方向にドラッグで幅変更可能。500ms 後に永続化、リロードで復元されることを期待
+
+#### Files Changed
+- `manifest.json`：1.46.18 → 1.46.19
+- `package.json`：同
+- `src/settings/settings.html`：`.history-grid` padding 削減 + resize/min-width/max-width 追加
+- `src/settings/settings.js`：renderHistoryTab に settingsHistGridWidth 取得、`_setupHistGridResize` 関数追加
+
+#### Native 変更なし
+
+---
+
 ## [1.46.18] - 2026-05-06
 
 ### Added — GROUP-74 構造的予防策 Tier 1〜3：v1.46.14〜v1.46.16 の連続 silent failure 事案の構造的再発防止

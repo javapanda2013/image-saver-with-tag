@@ -3657,6 +3657,8 @@ async function renderHistoryTab() {
     "histFilterMode", "histFormatFilter", "histSourceFilter", "histFavFilter",
     // v1.46.10 GROUP-21-a：ファイル名絞り込みも永続化
     "histFilenameFilter",
+    // v1.46.19 GROUP-75-grid-resizable (Q-75-1=g)：保存履歴 grid 幅の永続値
+    "settingsHistGridWidth",
   ])) };
   _historyData  = stored.saveHistory              || [];
   _histPageSize = stored.settingsHistoryPageSize  || 100;
@@ -3703,7 +3705,37 @@ async function renderHistoryTab() {
     }
   }).catch(() => {});
 
+  // v1.46.19 GROUP-75-grid-resizable (Q-75-1=g)：保存履歴 grid の横リサイズと幅の永続化を初期化
+  // 永続値を取得済（stored.settingsHistGridWidth）→ 初期 width に設定 → ResizeObserver で変更検知して保存
+  _setupHistGridResize(typeof stored.settingsHistGridWidth === "number" ? stored.settingsHistGridWidth : null);
+
   renderHistoryGrid();
+}
+
+// v1.46.19 GROUP-75-grid-resizable (Q-75-1=g)：保存履歴 grid のリサイズ機構。
+// CSS で resize: horizontal を有効化済、JS 側は永続化（storage.local.settingsHistGridWidth）と
+// 起動時復元のみ担当。_extFlSetupTableResize と同パターン。
+function _setupHistGridResize(savedWidth) {
+  const grid = document.getElementById("hist-grid");
+  if (!grid) return;
+  // 保存済み width を復元（min/max は CSS 側で制限されるため範囲外は CSS で吸収）
+  if (typeof savedWidth === "number" && savedWidth > 0) {
+    grid.style.width = savedWidth + "px";
+  }
+  if (grid.dataset.resizeBound) return; // 多重 bind 防止
+  grid.dataset.resizeBound = "1";
+  // ResizeObserver で width 変化検知、debounce 500ms で保存
+  let saveTimer = null;
+  const ro = new ResizeObserver(() => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      const w = Math.round(grid.offsetWidth);
+      if (w > 0) {
+        browser.storage.local.set({ settingsHistGridWidth: w }).catch(() => {});
+      }
+    }, 500);
+  });
+  ro.observe(grid);
 }
 
 // @spec 02_詳細設計書.md#4-3

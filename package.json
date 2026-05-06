@@ -1,6 +1,6 @@
 {
   "name": "borgestag",
-  "version": "1.46.18",
+  "version": "1.46.19",
   "private": true,
   "description": "BorgesTag Firefox extension - dev tooling only (web-ext / ESLint)",
   "scripts": {
