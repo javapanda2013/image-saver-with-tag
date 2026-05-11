@@ -1,0 +1,51 @@
+#!/usr/bin/env python
+"""
+GROUP-89 流出防止 commit-msg hook：commit message 内の開発者間やり取り・指示引用を検出。
+
+引数 argv[1]：commit message file path（git が自動付与）。
+
+検出時は exit 1 で commit を block。bypass 環境変数 BORGESTAG_LEAK_BYPASS=1 で skip。
+"""
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _leak_patterns import scan_text
+
+
+def main():
+    if os.environ.get("BORGESTAG_LEAK_BYPASS") == "1":
+        return 0
+    if len(sys.argv) < 2:
+        return 0
+    msg_file = sys.argv[1]
+    try:
+        with open(msg_file, encoding="utf-8", errors="replace") as f:
+            msg = f.read()
+    except Exception as e:
+        print(f"[commit-msg] read failed (skip): {e}", file=sys.stderr)
+        return 0
+
+    # commit message 末尾の Co-Authored-By trailer は除外（trailer 内に開発者名が入る正規パターン）
+    body = msg
+    # comment 行 (# で始まる) も除外（git の commit template）
+    body_lines = [l for l in body.split("\n") if not l.startswith("#")]
+    body = "\n".join(body_lines)
+
+    hits = scan_text(body)
+    if not hits:
+        return 0
+
+    print("ERROR: commit message に開発者間のやり取り・指示の引用を検出（GROUP-89 流出防止 commit-msg hook）", file=sys.stderr)
+    print(file=sys.stderr)
+    for label, match, pos in hits[:10]:
+        print(f"  - [{label}] pos={pos}: '{match}'", file=sys.stderr)
+    if len(hits) > 10:
+        print(f"  ... 他 {len(hits) - 10} 件", file=sys.stderr)
+    print(file=sys.stderr)
+    print("対応：commit message を中立な技術記述に書換、または環境変数 BORGESTAG_LEAK_BYPASS=1 を設定して再実行（auditable）", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

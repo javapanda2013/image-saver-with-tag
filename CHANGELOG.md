@@ -5,6 +5,10 @@
 
 ---
 
+## [1.46.22] - 2026-05-11
+
+### Added — GROUP-89 Step 4：commit-msg / pre-commit hook と scan-response 新カテゴリ leak-keyword による content scan 機構を追加
+
 ## [1.46.21] - 2026-05-08
 
 ### Internal — GROUP-41 Phase 6-2：コード内 @spec コメントを画面別 / 共通 サブディレクトリへ書換
