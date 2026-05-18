@@ -2472,7 +2472,10 @@ function setupModalEvents(
     });
     historyFilterClear.classList.toggle("visible", historyFilterTagChips.length > 0);
   }
-  function renderAuthorChips() {
+  // GROUP-97 v1.46.24（2026-05-18）：旧 `renderAuthorChips`（このファイル line 5862 にも save-flow 用同名定義あり）
+  // が JS hoisting で line 5862 版に上書きされ filter chip が描画されない不具合を解消するため、
+  // 履歴フィルター用を `renderFilterAuthorChips` に rename。save-flow 用は `renderDestAuthorChips`。
+  function renderFilterAuthorChips() {
     Array.from(historyAuthorFilterBox.querySelectorAll(".hist-chip")).forEach(n => n.remove());
     historyFilterAuthorChips.forEach((chip, idx) => {
       const el = document.createElement("span");
@@ -2495,7 +2498,7 @@ function setupModalEvents(
     historyFilterAuthorChips = chips;
     historyFilterAuthor = chips.join(" "); // shadow
     _histPage = 0;
-    renderAuthorChips();
+    renderFilterAuthorChips();   // GROUP-97 v1.46.24：旧 renderAuthorChips から rename（hoisting 衝突解消）
     renderHistory();
   }
 
@@ -5269,7 +5272,7 @@ function setupModalEvents(
     // 権利者をリセット（引き継ぎOFFのみ）
     if (!retainAuthor) {
       selectedAuthors = [];
-      renderAuthorChips();
+      renderDestAuthorChips();   // GROUP-97 v1.46.24：renderAuthorChips から rename
     }
     // ファイル名をリセット
     document.getElementById("input-filename").value = "";
@@ -5320,7 +5323,7 @@ function setupModalEvents(
     // 権利者をリセット（引き継ぎOFFのみ）
     if (!retainAuthor) {
       selectedAuthors = [];
-      renderAuthorChips();
+      renderDestAuthorChips();   // GROUP-97 v1.46.24：renderAuthorChips から rename
     }
 
     // プレビューをリセット
@@ -5490,7 +5493,7 @@ function setupModalEvents(
     subTagInput.value = "";
     hideSubSuggestions();
     selectedAuthors = [];
-    renderAuthorChips();
+    renderDestAuthorChips();   // GROUP-97 v1.46.24：renderAuthorChips から rename
     // storage.local に保存
     browser.storage.local.set({
       retainTag:       false,
@@ -5852,14 +5855,11 @@ function setupModalEvents(
   const allAuthors        = [...new Set([...(recentAuthors || []), ...(globalAuthors || [])])];
   let selectedAuthors     = [];
 
-  // GROUP-74-eslint（v1.46.17 ESLint 導入）：本ファイルには line 2475 に同名 renderAuthorChips
-  // が既に定義されているが、両者は別役割（line 2475 は履歴フィルター chip、本関数は保存先入力
-  // chip）。JS の関数宣言ホイスティングで 2 番目が 1 番目を上書きするが、setupModalEvents 内で
-  // 双方の callsite が「自身に近い」定義を期待してきた経緯があり、そのまま運用継続。
-  // 本来はリネーム整理（renderFilterAuthorChips / renderDestAuthorChips）が望ましいが、
-  // 本リリース範囲外。eslint-disable コメントで no-redeclare を本関数のみ抑止。
-  // eslint-disable-next-line no-redeclare
-  function renderAuthorChips() {
+  // GROUP-97 v1.46.24（2026-05-18）：旧 renderAuthorChips から rename。
+  // 履歴フィルター用は `renderFilterAuthorChips`（line 2475 付近）、本関数は保存先入力用 `renderDestAuthorChips`。
+  // 旧コメントは「双方の callsite が自身に近い定義を期待」と書いていたが、JS hoisting には「近い」概念は無く
+  // 常に最後の宣言が勝つため事実上 line 2475 版は呼ばれていなかった（履歴フィルター chip 描画不全の原因）。
+  function renderDestAuthorChips() {
     authorChipsEl.innerHTML = "";
     selectedAuthors.forEach(a => {
       const chip = document.createElement("span");
@@ -5874,7 +5874,7 @@ function setupModalEvents(
       delBtn.tabIndex = -1; // GROUP-71：v1.46.10 GROUP-22-tab で見落とした保存ウィンドウ dest-tabbar 側
       delBtn.addEventListener("click", () => {
         selectedAuthors = selectedAuthors.filter(x => x !== a);
-        renderAuthorChips();
+        renderDestAuthorChips();
       });
       chip.appendChild(delBtn);
       authorChipsEl.appendChild(chip);
@@ -5890,14 +5890,14 @@ function setupModalEvents(
   }
   if (retainAuthor && initialRetainedAuthors.length) {
     selectedAuthors = [...initialRetainedAuthors];
-    renderAuthorChips();
+    renderDestAuthorChips();   // GROUP-97 v1.46.24：renderAuthorChips から rename
   }
 
   function addAuthorChip(name) {
     const v = name.trim();
     if (!v || selectedAuthors.includes(v)) return;
     selectedAuthors.push(v);
-    renderAuthorChips();
+    renderDestAuthorChips();   // GROUP-97 v1.46.24：renderAuthorChips から rename
     authorInput.value = "";
     authorInputClear.style.display = "none";
     hideAuthorSuggestions();
