@@ -3842,8 +3842,12 @@ function renderHistoryGrid() {
   if (displayMode === "group") {
     // v1.41.1：グループ表示モードは従来通り全破棄＋全描画
     // （Phase 3+ で再利用化検討。タブ切替直後の空白点滅は通常モードに比べ頻度低）
+    // GROUP-95 v1.46.23：handle は保持して他要素のみ削除（innerHTML="" だと handle も消える）
     _destroyGifSessionsInTree(grid);
-    grid.innerHTML = "";
+    for (const el of Array.from(grid.children)) {
+      if (el.classList && (el.classList.contains("history-grid-handle-left") || el.classList.contains("history-grid-handle-right"))) continue;
+      el.remove();
+    }
     renderHistoryGridGrouped(grid, pageSlice);
     document.getElementById("hist-delete-selected").disabled = _histSelected.size === 0;
     document.getElementById("hist-deselect-all").disabled = _histSelected.size === 0;
@@ -3889,9 +3893,12 @@ function _renderHistoryGridNormalReuse(grid, pageSlice) {
     }
   }
   // hist-empty / hist-group-wrapper など hist-card 以外は破棄対象に回す
-  const others = Array.from(grid.children).filter(el =>
-    !(el.classList && el.classList.contains("hist-card") && el.dataset && el.dataset.entryId)
-  );
+  // GROUP-95 v1.46.23：handle（左右 edge drag handle）は再描画で消失すると以降表示されなくなるため保持
+  const others = Array.from(grid.children).filter(el => {
+    if (el.classList && el.classList.contains("hist-card") && el.dataset && el.dataset.entryId) return false;
+    if (el.classList && (el.classList.contains("history-grid-handle-left") || el.classList.contains("history-grid-handle-right"))) return false;
+    return true;
+  });
   for (const el of others) {
     _destroyGifSessionsInTree(el);
     el.remove();
